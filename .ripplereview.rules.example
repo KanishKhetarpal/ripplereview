@@ -1,0 +1,15 @@
+# Architecture rules. Copy to `.ripplereview.rules` in the repository you review.
+#
+# One directive: `deny <from-glob> -> <to-glob>`. An edge in the dependency graph that
+# matches both sides is reported as a violation, and flagged separately when the change
+# under review is what created it.
+#
+# Globs: `**` crosses directory separators, `*` does not, `?` is one character.
+# A malformed line is an error, not a skip — a rule silently ignored is a rule its author
+# believes is protecting them.
+
+# The domain layer must not reach into infrastructure.
+deny src/domain/** -> src/infrastructure/**
+
+# Controllers talk to services, never to repositories directly.
+deny src/**/*.controller.ts -> src/**/*.repository.ts
