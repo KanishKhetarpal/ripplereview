@@ -6,7 +6,7 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'eval/out/**', '**/__fixtures__/**'],
+    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'eval/out/**', '.probe/**'],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
