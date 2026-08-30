@@ -35,9 +35,10 @@ Runnable today:
 ```bash
 pnpm install
 pnpm build
-node dist/cli/main-cli.js demo            # runs the built half of the pipeline
+node dist/cli/main-cli.js impact . --base HEAD~1 --head HEAD   # the graph engine
+node dist/cli/main-cli.js demo                                 # LLM half, fixture change
 node dist/cli/main-cli.js config
-node dist/main.js                          # REST API on :3000/api/v1
+node dist/main.js                                              # REST API on :3000/api/v1
 ```
 
 | Stage | State | Where |
@@ -51,7 +52,10 @@ node dist/main.js                          # REST API on :3000/api/v1
 | CLI (`review`, `demo`, `config`) with documented exit codes | done | `src/cli/` |
 | REST API (`/health`, `/review`, `/review/demo`) | done | `src/health/`, `src/review/` |
 | CI (lint, typecheck, build, test) | done | `.github/workflows/ci.yml` |
-| Ingest, graph engine, context assembler | **not built** | Phases 1–2 |
+| Ingest: git diff, unified-diff parser, changed-symbol resolution | done | `src/ingest/`, `src/graph/symbol-locator.ts` |
+| Graph engine: module graph, blast radius, cycles, rules, instability | done | `src/graph/` |
+| `ripplereview impact` — the graph engine with no model involved | done | `src/cli/`, `src/output/impact-renderer.ts` |
+| Context assembler | **not built** | Phase 2 |
 | Real providers (OpenAI, Gemini) | **not built** | Phase 2 |
 | Eval harness | **not built** | Phase 3 |
 | Persistence, GitHub App | **not built** | Phase 4 |
@@ -84,25 +88,80 @@ repo-relative paths. RippleReview's central promise is *symbol* blast radius —
 sites does this changed function reach" — and there is no symbol layer to reuse. That is
 net-new work in Phase 1, and it is the differentiating half.
 
-Worse, `TsMorphProjectLoader` sets `skipFileDependencyResolution: true` and skips the target
-repo's tsconfig, deliberately, so parsing stays fast and independent of the target's
-toolchain. Symbol reference resolution needs the opposite: a type-checked project with real
-module resolution. So Phase 1 needs a **second loading mode**, and its cost has to be
-measured before the hop limit and ranking defaults are chosen.
+~~Worse, `TsMorphProjectLoader` sets `skipFileDependencyResolution: true` ... so Phase 1
+needs a **second loading mode**.~~ **Wrong — corrected by measurement, see §2a.** There is
+one loading mode, and it is the cheap one.
 
-Two smaller notes carried forward:
+Two smaller notes, both since resolved:
 
-- The Tarjan implementation is recursive. Fine at Arch Lens's scale; a deep repository could
-  blow the stack. Convert to an iterative implementation when the graph grows, not before.
+- The Tarjan implementation is recursive, so its stack depth is the longest dependency chain
+  in the repository. Measured: 1,000 links fine, 5,000 links throws. Rewritten iteratively.
 - Arch Lens's `lint` script is `eslint --fix`. That repairs the working copy and reports
   success on code that never satisfied the rules. Here `lint` never fixes; `lint:fix` is
   separate, and CI runs `lint`.
 
-Reuse will be by **vendoring with attribution**, not by depending on the package: Arch Lens
-is private and unpublished, and these files need adapting (symbol layer, second loader mode)
+Reuse is by **vendoring with attribution**, not by depending on the package: Arch Lens is
+unpublished, and these files needed adapting (symbol layer, extra module-resolution forms)
 rather than consuming unchanged.
 
 ---
+
+## 2a. What the Phase 1 probes measured
+
+Phase 1 opened with a probe, as planned. It changed three decisions and corrected one claim
+this document had already made. Numbers are from this machine; re-measure before trusting
+them elsewhere.
+
+**Loader cost, by repository size**
+
+| Repo | Files | Cheap load | Resolving load | 1st reference lookup | Later lookups |
+|---|---|---|---|---|---|
+| RippleReview | 35 | 105ms / ~9MB | 1702ms / ~100MB | 894ms | 14ms |
+| arch-lens | 135 | 105ms / ~9MB | 1084ms / ~106MB | 437ms | 9ms |
+| a NestJS CRM | 677 | 741ms / ~160MB | **24.9s / ~2.2GB** | 18.4s (heap → 3.0GB) | 102ms |
+
+**1. One loading mode, not two.** `skipFileDependencyResolution: true` produces reference
+sets *identical* to a fully resolving load — verified across two repositories for functions,
+classes and methods. It works because the tsconfig has already added every file in the
+repository, so references between them resolve from the file set rather than from the
+resolver. What it skips is pulling in node_modules type definitions, which the language
+service then does not have to hold. The resolving load OOM'd Node's default heap on the
+677-file repository outright, so this is not an optimisation — it is what makes a repository
+of that size analysable at all.
+
+**2. The base graph is built by adjusting the head graph, not by loading the base revision.**
+Cycle comparison needs both revisions at once, and two loads of a large repository do not
+fit. A file that did not change has identical imports at both refs, so only the changed files
+need their base content fetched — typically under twenty `git show` calls rather than one per
+file. Exact for import-graph purposes, and it never touches the user's working tree.
+
+**3. Reference sets include the import statements themselves.** Probed directly: a symbol
+used through a barrel file comes back with both the `import` line and the actual call, in
+every importing file. Counted, every module that merely imports a changed symbol becomes an
+impacted site — and because the import sits at module scope, the *whole file* is reported as
+impacted whether or not anything in it uses the symbol. Import and export specifiers are
+filtered out.
+
+**4. The recursive Tarjan does not survive a real monorepo.** Measured against arch-lens's
+implementation: 1,000-link chain fine, 5,000-link chain throws "Maximum call stack size
+exceeded". Rewritten with an explicit stack; the spec covers 50,000 links.
+
+**Still open, and known:**
+
+- A **first reference lookup on a large repository costs ~18s and ~3GB**. That is a one-time
+  warm-up and every later lookup is ~100ms, but the default Node heap will not survive it.
+  Raising the heap for the CLI, and reporting warm-up separately from lookup cost, is Phase 2
+  work.
+- **Module-scope changes are not walked.** An edited import has no declaration to look
+  references up from, so its dependents are reported at module granularity only. The renderer
+  says so rather than reporting "nothing was impacted". Walking the module graph's reverse
+  edges for these would close it.
+- **A reference in a file the tsconfig does not include is not found** — a sibling package in
+  a monorepo. Under-reporting, which is the acceptable direction, but it is not reported yet.
+- **`--head` must be the checked-out revision.** The graph is built from the files on disk;
+  analysing another ref would resolve the diff's line numbers against different code. It is
+  refused rather than silently wrong. Materialising an arbitrary revision means a worktree
+  checkout, which is its own decision.
 
 ## 3. Architecture
 
@@ -200,41 +259,50 @@ tests written alongside — not after.
 - [x] CI: lint → typecheck → build → test, no auto-fix, no silent skips
 - [x] PLAN.md and README
 
-### Phase 1 — Graph MVP (no LLM)
+### Phase 1 — Graph MVP (no LLM) ✅ done
 
-The deliverable is a `ChangeImpact` that is correct, on a fixture repo with known structure.
+`ripplereview impact <repo> --base <ref> --head <ref>` produces a `ChangeImpact` and renders
+it. Verified against a fixture repository with a known dependency structure (blast radius
+asserted as exact SETS, not counts) and run against a real 135-file repository.
 
-- [ ] **Probe first**: measure ts-morph project load with real dependency resolution + the
-      target tsconfig, on a small repo and on this repo. Record cold/warm timings. The hop
-      limit, ranking defaults and whether references are resolved eagerly or lazily are all
-      decided by that number, not guessed.
-- [ ] `src/ingest/`: repo reader (local path), `simple-git` diff between two refs, unified
-      diff parser.
-- [ ] Changed-**symbol** resolution: map changed line ranges to the enclosing declarations
-      via ts-morph, with `added | modified | removed` and whether the symbol is exported.
-- [ ] Module dependency graph (vendored from Arch Lens, adapted).
-- [ ] Symbol reference graph via the ts-morph language service — the net-new layer.
-- [ ] Blast radius: BFS out from each changed symbol to `BLAST_RADIUS_MAX_HOPS`, recording
-      hop distance and the changed symbol each site traces back to.
-- [ ] Cycle introduction: SCC set of the base graph vs the head graph; report only the
-      difference. Requires materialising both revisions — decide worktree vs in-memory and
-      write down why.
-- [ ] Architecture rules: load `.ripplereview.rules` (e.g. `domain !-> infrastructure`),
-      flag violating edges, mark which the change introduced.
-- [ ] Instability deltas per module.
-- [ ] Fixture repo with a deliberately known structure; assert exact blast-radius sets.
+- [x] **Probe first** — see §2a. It corrected this plan rather than confirming it.
+- [x] `src/ingest/`: git via `simple-git`, `--find-renames`, unified-diff parser.
+- [x] Changed-**symbol** resolution: changed lines → innermost enclosing declaration, with
+      `added | modified | removed` and whether it is reachable from outside the module.
+- [x] Module dependency graph (vendored from arch-lens, extended for `.mts`/`.cts` and for
+      the NodeNext rule that `./x.js` resolves to `./x.ts`).
+- [x] Symbol reference graph via the ts-morph language service — the net-new layer.
+- [x] Blast radius: BFS to `BLAST_RADIUS_MAX_HOPS`, shortest distance wins, lookup ceiling
+      with truncation reported rather than silently returning a partial answer.
+- [x] Cycle introduction: SCC of base vs head, pre-existing cycles reported but not blamed.
+- [x] Architecture rules: `.ripplereview.rules`, `deny <glob> -> <glob>`, malformed line is
+      an error rather than a skip.
+- [x] Instability deltas, for the touched modules only.
+- [x] Fixture repo with a known structure; exact blast-radius set assertions.
 
-**Risks to settle in this phase, not later**
+**Risks this phase was meant to settle, and what happened**
 
-- A repo that does not typecheck. The reviewer must degrade to module-granularity impact and
-  say so, never silently return an empty blast radius.
-- Re-exports and barrel files (`index.ts`) inflating fan-in and hop counts.
-- Dynamic `import()`, DI-by-string, and framework magic that the graph cannot see. Under-
-  reporting is acceptable; claiming completeness is not.
+- *A repo that does not typecheck*: not a problem in practice. The loader never type-checks,
+  and reference lookup is resolution-based, so a repository with type errors still yields a
+  graph. Untested against a repository that does not **parse**.
+- *Re-exports and barrel files*: handled. Barrel edges are in the module graph (that is where
+  cycles hide), and a barrel that only re-exports a symbol is correctly not an impacted site.
+- *Dynamic `import()` and DI-by-string*: a literal `import('./x')` is an edge; a computed one
+  is skipped rather than guessed at. Nest's DI-by-token is invisible to the graph, so the
+  blast radius under-reports for it — accepted, and the direction to be wrong in.
 
 ### Phase 2 — Context assembler + first real review
 
 The heart of the project, and the part worth talking about in an interview.
+
+Carried over from Phase 1, because they are cheap here and awkward there:
+
+- [ ] Raise the CLI's heap and report language-service warm-up separately from lookup cost;
+      a 677-file repository needs ~3GB for its first reference lookup.
+- [ ] Walk the module graph's reverse edges for module-scope changes, so an edited import
+      reports its dependents instead of reporting nothing.
+- [ ] Report when the tsconfig excludes files the change touches, so an under-reported blast
+      radius says so.
 
 - [ ] Token budgeter with a measurable packing strategy and explicit truncation fallbacks;
       dropped evidence is recorded in `ContextBudget.droppedItemIds`, never dropped silently.

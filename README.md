@@ -10,11 +10,13 @@ crossed a layer boundary.
 RippleReview computes that blast radius deterministically from the repository's dependency
 graph and hands the model **cited evidence** alongside the diff. Same model, better input.
 
-> **Status: Phase 0.** The scaffold, the LLM adapter, response validation, the grounding
-> guard and both output surfaces are built and tested. The ingest, graph engine and context
-> assembler are not. `ripplereview review` refuses and names the missing phase rather than
-> returning an empty result — see [PLAN.md](PLAN.md) for the phased roadmap, and
-> `GET /api/v1/health` for the live stage report.
+> **Status: Phase 1.** The graph engine works: point `ripplereview impact` at a repository
+> and it computes the real blast radius of a change, the cycles the change introduced, and
+> any architecture rule it broke — all deterministically, with no model involved. The context
+> assembler and the real LLM providers are Phase 2, so `ripplereview review` still refuses
+> and names the missing phase rather than returning an empty result. See [PLAN.md](PLAN.md)
+> for the roadmap and the measurements behind the design, and `GET /api/v1/health` for the
+> live stage report.
 
 ---
 
@@ -49,24 +51,41 @@ pnpm install
 pnpm build
 ```
 
-Run the pipeline stages that exist, over a fixture change:
+Compute the blast radius of a change — the graph engine, no model, no API key:
+
+```bash
+node dist/cli/main-cli.js impact . --base HEAD~1 --head HEAD
+```
+
+```
+RippleReview — change impact
+HEAD~1..HEAD  /path/to/repo
+134 modules, 313 edges  |  3 hop limit  |  1826ms
+
+Changed symbols (36) and what they reach (15 sites)
+
+  ConfigModule
+    src/config/config.module.ts:7  class  modified
+    1 hop  src/app.module.ts:7      AppModule
+    2 hop  src/main.ts:6            bootstrap
+    2 hop  src/cli/main-cli.ts:52   main
+    3 hop  src/main.ts:10           <module>
+
+Circular dependencies (1)
+  INTRODUCED  src/checkout/checkout.service.ts <-> src/pricing/price.service.ts
+
+Architecture violations (1)
+  INTRODUCED  src/domain/order.ts -> src/infra/db.ts
+    deny src/domain/** -> src/infra/**
+```
+
+That chain — a config change reaching `bootstrap` three modules away — is what a diff-only
+reviewer cannot see.
+
+Run the model half over a fixture change (offline, uses the `echo` stub):
 
 ```bash
 node dist/cli/main-cli.js demo
-```
-
-```
-RippleReview
-main..feature/discounts  /demo/shop
-graph-grounded  |  echo/echo-stub  |  2ms
-
-Blast radius
-  1 changed symbol(s) across 1 file(s)
-  2 impacted site(s) within 3 hop(s)
-  1 circular dependency introduced
-
-Findings (1)
-  ...
 ```
 
 Machine-readable output — stdout carries JSON and nothing else:
@@ -89,7 +108,11 @@ curl http://localhost:3000/api/v1/health
 ```
 ripplereview [--json] [--no-color] [-v] <command>
 
-  review <repo>   review the change between two refs
+  impact <repo>   compute the blast radius of a change — graph engine only, no model
+                  --base <ref>   default HEAD~1
+                  --head <ref>   default HEAD, and must be the checked-out revision
+                  --hops <n>     how far to walk (default BLAST_RADIUS_MAX_HOPS)
+  review <repo>   review the change between two refs (Phase 2)
                   --base <ref>   default HEAD~1
                   --head <ref>   default HEAD
                   --diff-only    skip the graph engine (the eval baseline)
@@ -113,7 +136,7 @@ Exit codes are a contract with CI:
 |---|---|
 | `GET /api/v1/health` | live report of which pipeline stages are implemented |
 | `POST /api/v1/review/demo` | runs the implemented stages over the fixture change |
-| `POST /api/v1/review` | `501` until the graph engine and assembler land |
+| `POST /api/v1/review` | `501` until the context assembler lands (Phase 2) |
 | `GET /api/v1/review/runs/:id` | `501` until persistence lands (Phase 4) |
 
 ---
@@ -138,6 +161,35 @@ Selecting `openai` or `gemini` today fails at boot with the phase it lands in. F
 to the stub would let a run report findings that no model ever produced.
 
 ---
+
+## Architecture rules
+
+Drop a `.ripplereview.rules` file in the repository you are reviewing (see
+[`.ripplereview.rules.example`](.ripplereview.rules.example)):
+
+```
+# The domain layer must not reach into infrastructure.
+deny src/domain/** -> src/infrastructure/**
+```
+
+An edge matching both sides is reported, and flagged separately when the change under review
+is what created it. A malformed line is an error, not a skip — a rule silently ignored is a
+rule its author believes is protecting them.
+
+## Known limits
+
+Honest about direction: the blast radius **under-reports** rather than inventing reach.
+
+- A module-scope change (an edited import) has no declaration to look references up from, so
+  its dependents are reported at module granularity only. The output says so.
+- A reference in a file the repository's tsconfig does not include — a sibling package in a
+  monorepo — is not found.
+- Dependency injection by string token, and any computed `import()`, are invisible to a
+  static graph.
+- `--head` must be the checked-out revision. The graph is built from the files on disk, so
+  another ref would resolve the diff's line numbers against different code; that is refused
+  rather than silently wrong.
+- A first reference lookup on a large repository (~700 files) costs ~18s and ~3GB of heap.
 
 ## Development
 
@@ -166,9 +218,13 @@ come from [arch-lens](https://github.com/KanishKhetarpal/arch-lens), an earlier
 codebase-to-architecture-diagram generator by the same author.
 
 What does **not** carry over is the interesting part: Arch Lens's graph is file-granularity
-only, and its ts-morph loader deliberately skips dependency resolution. Symbol-level blast
-radius needs a type-checked project and a reference graph that does not exist there — that
-is net-new work in Phase 1, and it is the half that makes this project different.
+only — its edges are file-to-file imports, with no symbol layer at all. Symbol-level blast
+radius is net-new, and it is the half that makes this project different.
+
+One assumption from that reading turned out to be wrong, and measuring it is what caught it:
+Arch Lens skips ts-morph's dependency resolution, and I expected symbol references to need
+the opposite. They do not — the reference sets are identical either way, and the cheap loader
+uses ~25x less memory. See [PLAN.md §2a](PLAN.md) for the numbers.
 
 ---
 
