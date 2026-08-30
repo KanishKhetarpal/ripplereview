@@ -1,0 +1,4 @@
+# One line ending in the repository, regardless of who checked it out.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
