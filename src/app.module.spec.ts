@@ -35,7 +35,8 @@ describe('AppModule (real container)', () => {
   it('reports honestly which stages exist', () => {
     const report = app.get(HealthController).check();
     expect(report.status).toBe('ok');
-    expect(report.stages.graph).toBe('not-implemented');
+    expect(report.stages.graph).toBe('implemented');
+    expect(report.stages.contextAssembler).toBe('not-implemented');
     expect(report.stages.llmAdapter).toBe('implemented');
   });
 

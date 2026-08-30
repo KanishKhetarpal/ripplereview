@@ -31,7 +31,7 @@ describe('Review HTTP API', () => {
   it('serves a health report naming the implemented stages', async () => {
     const response = await request(server()).get('/api/v1/health').expect(200);
     expect(response.body.status).toBe('ok');
-    expect(response.body.stages.graph).toBe('not-implemented');
+    expect(response.body.stages.contextAssembler).toBe('not-implemented');
   });
 
   it('runs the demo review over HTTP', async () => {

@@ -26,8 +26,8 @@ export class HealthController {
       nodeEnv: this.config.nodeEnv,
       llmProvider: this.llm.providerName,
       stages: {
-        ingest: 'not-implemented',
-        graph: 'not-implemented',
+        ingest: 'implemented',
+        graph: 'implemented',
         contextAssembler: 'not-implemented',
         llmAdapter: 'implemented',
         findingParser: 'implemented',
