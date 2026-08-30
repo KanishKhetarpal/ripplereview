@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { buildFixtureRepo } from '../graph/__fixtures__/build-fixture-repo';
 
 const CLI = resolve(process.cwd(), 'dist/cli/main-cli.js');
 const BUILT = existsSync(CLI);
@@ -83,6 +84,49 @@ describe.skipIf(!BUILT)('ripplereview CLI (spawned binary)', () => {
     const result = run(['demo'], { LLM_PROVIDER: 'gemini', GOOGLE_API_KEY: 'test-key' });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('not implemented yet');
+  });
+
+  it('computes a real blast radius over the fixture repository', () => {
+    const fixture = buildFixtureRepo();
+    try {
+      const result = run(['--json', 'impact', fixture.path], { LLM_PROVIDER: 'echo' });
+      expect(result.status).toBe(0);
+
+      const impact = JSON.parse(result.stdout) as {
+        changedSymbols: { id: string }[];
+        impactedSites: { symbolId: string; hops: number }[];
+        cycles: { introducedByChange: boolean }[];
+      };
+
+      expect(impact.changedSymbols.map((s) => s.id)).toContain(
+        'src/pricing/price.service.ts#PriceService.total',
+      );
+      expect(impact.impactedSites.map((s) => s.symbolId)).toContain(
+        'src/checkout/checkout.service.ts#CheckoutService.confirm',
+      );
+      expect(impact.cycles.some((c) => c.introducedByChange)).toBe(true);
+    } finally {
+      rmSync(fixture.path, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('refuses a head ref that is not checked out, with exit 2', () => {
+    const fixture = buildFixtureRepo();
+    try {
+      const result = run(['impact', fixture.path, '--head', 'HEAD~1'], {
+        LLM_PROVIDER: 'echo',
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('not the checked-out revision');
+    } finally {
+      rmSync(fixture.path, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('rejects a nonsensical hop count instead of silently using NaN', () => {
+    const result = run(['impact', '.', '--hops', 'lots'], { LLM_PROVIDER: 'echo' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('between 1 and 10');
   });
 
   it('prints resolved configuration as JSON', () => {

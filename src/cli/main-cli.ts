@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import 'reflect-metadata';
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { LogLevel } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppConfigService } from '../config/app-config.service';
+import { ChangeImpact } from '../core/types/change-impact';
 import { ReviewResult } from '../core/types/review-result';
+import { ImpactRenderer } from '../output/impact-renderer';
 import { ReportRenderer } from '../output/report-renderer';
+import { ImpactService } from '../review/impact.service';
 import { ReviewService } from '../review/review.service';
 
 /**
@@ -27,7 +30,9 @@ async function withApp<T>(
   options: GlobalOptions,
   work: (ctx: {
     reviews: ReviewService;
+    impacts: ImpactService;
     renderer: ReportRenderer;
+    impactRenderer: ImpactRenderer;
     config: AppConfigService;
   }) => Promise<T>,
 ): Promise<T> {
@@ -52,7 +57,9 @@ async function withApp<T>(
   try {
     return await work({
       reviews: app.get(ReviewService),
+      impacts: app.get(ImpactService),
       renderer: app.get(ReportRenderer),
+      impactRenderer: app.get(ImpactRenderer),
       config: app.get(AppConfigService),
     });
   } finally {
@@ -67,6 +74,26 @@ function emit(result: ReviewResult, renderer: ReportRenderer, options: GlobalOpt
   }
   const color = options.color !== false && process.stdout.isTTY === true;
   process.stdout.write(`${renderer.renderText(result, { color })}\n`);
+}
+
+function emitImpact(impact: ChangeImpact, renderer: ImpactRenderer, options: GlobalOptions): void {
+  if (options.json) {
+    process.stdout.write(`${renderer.renderJson(impact)}
+`);
+    return;
+  }
+  const color = options.color !== false && process.stdout.isTTY === true;
+  process.stdout.write(`${renderer.renderText(impact, { color })}
+`);
+}
+
+/** Commander hands option values through as strings; a bad one must not become NaN. */
+function parseHops(value: string): number {
+  const hops = Number(value);
+  if (!Number.isInteger(hops) || hops < 1 || hops > 10) {
+    throw new InvalidArgumentError('must be a whole number between 1 and 10');
+  }
+  return hops;
 }
 
 function fail(error: unknown): never {
@@ -104,6 +131,31 @@ export function buildProgram(): Command {
             diffOnly: cmd.diffOnly,
           });
           emit(result, renderer, globals);
+        });
+        process.exit(EXIT_OK);
+      } catch (error) {
+        fail(error);
+      }
+    });
+
+  program
+    .command('impact')
+    .argument('<repo>', 'path to the repository working tree')
+    .option('--base <ref>', 'base git ref', 'HEAD~1')
+    .option('--head <ref>', 'head git ref', 'HEAD')
+    .option('--hops <n>', 'how far out to walk the blast radius', parseHops)
+    .description('compute the blast radius of a change — the graph engine, no model')
+    .action(async (repo: string, cmd: { base: string; head: string; hops?: number }) => {
+      const globals = program.opts<GlobalOptions>();
+      try {
+        await withApp(globals, async ({ impacts, impactRenderer }) => {
+          const impact = await impacts.compute({
+            repoPath: repo,
+            baseRef: cmd.base,
+            headRef: cmd.head,
+            maxHops: cmd.hops,
+          });
+          emitImpact(impact, impactRenderer, globals);
         });
         process.exit(EXIT_OK);
       } catch (error) {
