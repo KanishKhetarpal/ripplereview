@@ -38,6 +38,7 @@ pnpm build
 node dist/cli/main-cli.js impact . --base HEAD~1 --head HEAD   # the graph engine
 node dist/cli/main-cli.js review . --base HEAD~1 --head HEAD   # the full pipeline
 node dist/cli/main-cli.js review . --diff-only                 # the eval baseline
+pnpm eval --runs 3                                             # score both arms
 node dist/cli/main-cli.js config
 node dist/main.js                                              # REST API on :3000/api/v1
 ```
@@ -59,7 +60,8 @@ node dist/main.js                                              # REST API on :30
 | Context assembler: token budgeter, ranking, evidence serializer | done | `src/context/` |
 | Real providers (OpenAI, Gemini) | built, **never run against a live API** | `src/llm/providers/` |
 | `ripplereview review` — the full pipeline, and `--diff-only` baseline | done | `src/review/` |
-| Eval harness | **not built** | Phase 3 |
+| Eval harness: corpus, matcher, metrics, scorecard | done | `eval/` |
+| **The number itself** | **not produced** — needs a model key | Phase 3, blocked |
 | Persistence, GitHub App | **not built** | Phase 4 |
 
 `GET /api/v1/health` reports that table at runtime, so nothing has to be assumed from a doc.
@@ -349,22 +351,57 @@ must do is one real call per vendor.
 
 ### Phase 3 — Eval harness + baseline ← **the resume number**
 
-- [ ] **First: one real call per vendor.** Nothing downstream means anything until a live
-      OpenAI and a live Gemini response has been parsed, grounded and rendered end to end.
+**Harness done. The number is not produced: it needs a model key, and there is none on the
+machine this was built on.** Everything below the last item is built, tested and runs.
 
-- [ ] 3–5 fixture repos, each with a ground-truth defect set, weighted toward cross-module
-      defects: a change that silently breaks a distant caller, a new cycle, a layering
-      violation.
-- [ ] Optional: scripted mutations against a real OSS TypeScript repo, for scale.
-- [ ] Diff-only baseline: same provider, same model, same prompt, diff only.
-- [ ] Metrics: precision, recall, F1, **cross-module catch-rate**, plus tokens, cost, latency
-      per review. Both arms run N times; report variance, because a single run of a
-      non-deterministic model is an anecdote.
-- [ ] Scorecard: Markdown + JSON + chart, committed under `eval/out/`.
-- [ ] Runs in CI so the number is reproducible.
+- [x] Defect corpus: five real two-commit git repositories, built programmatically.
+- [x] Diff-only baseline arm, sharing one application context with the grounded arm so the
+      provider, model and prompt are provably identical.
+- [x] Metrics: precision, recall, F1, **cross-module catch-rate**, tokens, latency, and the
+      spread across runs.
+- [x] Scorecard: Markdown + JSON + a dependency-free SVG chart, under `eval/out/`.
+- [x] Runs in CI against the offline stub, so a harness that stops working is caught on the
+      day it breaks rather than the day someone needs the number.
+- [ ] **Run it against a real model.** `OPENAI_API_KEY=... pnpm eval --runs 5`.
 
-**The honesty rule for this phase**: if graph context does not beat the baseline, the
-scorecard says so. A number that only ever confirms the thesis is not a measurement.
+**The corpus, and why each case is there**
+
+| Case | Defect | What it tests |
+|---|---|---|
+| `signature-drift` | a caller two modules away never updated, compiles fine | the headline claim |
+| `new-cycle` | a new import closes a cycle the diff cannot show | the headline claim |
+| `layering-breach` | domain imports infrastructure, against a declared rule | the headline claim |
+| `local-bug` | off-by-one inside one function, fully visible in the diff | **control** — graph context should NOT help |
+| `clean-refactor` | nothing wrong at all | **control** — does extra context provoke invented findings? |
+
+The two controls are what let a win be attributed. Without `local-bug`, a better score
+could just mean "more context helps"; without `clean-refactor`, nothing measures whether
+the evidence block makes the model imagine problems.
+
+`corpus.spec.ts` validates the corpus before it is ever used to score a model: every
+repository must **compile at head** (a defect that breaks the build would be caught by tsc,
+not by a reviewer), and the graph engine must actually **surface** each structural defect.
+If the cycle were not detected, the grounded arm would have no more information than the
+baseline, and a tie would prove the corpus was broken rather than anything about context —
+a failure that is invisible in the final numbers.
+
+**How a finding is credited.** Same file, within the defect's line tolerance, and a
+category the defect accepts. The category rule is what stops a reviewer scoring well by
+emitting one vague finding per file. Several findings identifying one defect credit it
+once, and the extras count as neither hits nor false positives — calling them wrong would
+punish thoroughness, crediting them twice would let one repeated finding inflate recall.
+**No language model is involved in scoring**; an LLM judge would put the thing under
+measurement inside the measurement.
+
+**The scorecard is allowed to say the thesis failed.** The verdict is computed from
+`separated()`, which requires the gap between arms to exceed their combined run-to-run
+spread before it is called a difference at all. A scorecard that reported any positive gap
+as a win would confirm the thesis whatever the data said. `verdict()` is unit-tested to
+produce all four sentences: a win, a loss, no measurable difference, and inconclusive.
+
+**⚠️ What a stub run means.** `pnpm eval` with `LLM_PROVIDER=echo` completes in ~8s and
+reports 0.0% vs 0.0%. That is the harness working, not a negative result, and the scorecard
+says so in bold at the top. Do not quote it.
 
 ### Phase 4 — GitHub PR integration + CI + persistence
 

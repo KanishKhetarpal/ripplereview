@@ -10,15 +10,12 @@ crossed a layer boundary.
 RippleReview computes that blast radius deterministically from the repository's dependency
 graph and hands the model **cited evidence** alongside the diff. Same model, better input.
 
-> **Status: Phase 2.** The pipeline runs end to end: `ripplereview review` computes the
-> blast radius, packs it into a token budget as cited evidence, sends it to the model, and
-> drops any structural finding that is not grounded in that evidence. `--diff-only` runs the
-> same pipeline with the evidence removed — the baseline Phase 3 will measure against.
->
-> **No live model call has been made yet.** There is no OpenAI or Google key on the machine
-> this was built on. Both providers are tested against a real local HTTP server, including
-> every error path, but the default provider is still the offline `echo` stub. See
-> [Known limits](#known-limits).
+> **Status: Phase 3 — harness built, number not yet produced.** The pipeline runs end to
+> end and the eval harness scores graph-grounded review against a diff-only baseline on a
+> five-case defect corpus. What is missing is a model: there is no API key on the machine
+> this was built on, so **no live model call has ever been made** and the scorecard has only
+> ever run against the offline `echo` stub. One command produces the real number — see
+> [Producing the number](#producing-the-number).
 
 ---
 
@@ -213,10 +210,14 @@ inferring that nothing else exists.
 
 Honest about direction: the blast radius **under-reports** rather than inventing reach.
 
-- **No live model call has been verified.** Both vendor providers are tested against a real
-  local HTTP server — path, auth header, body shape, and every error path including
-  OpenAI's `text/plain` 401 and Gemini's HTTP-400-for-a-bad-key — but no request has ever
-  reached the real services with a valid key.
+- **No live model call has been verified, and no eval number exists.** Both vendor
+  providers are tested against a real local HTTP server — path, auth header, body shape,
+  and every error path including OpenAI's `text/plain` 401 and Gemini's
+  HTTP-400-for-a-bad-key — but no request has ever reached the real services with a valid
+  key, so every scorecard so far is a stub run.
+- The corpus is **five small purpose-built repositories**. It is enough to detect a large
+  effect and not enough to measure a small one; scaling it to mutations of a real OSS
+  repository is the obvious next step.
 - A module-scope change (an edited import) has no declaration to look references up from, so
   its dependents are walked through the module graph and reported at module granularity,
   capped at 25 dependants.
@@ -228,6 +229,36 @@ Honest about direction: the blast radius **under-reports** rather than inventing
   another ref would resolve the diff's line numbers against different code; that is refused
   rather than silently wrong.
 - A first reference lookup on a large repository (~700 files) costs ~18s and ~3GB of heap.
+
+## Producing the number
+
+The whole project rests on one comparison: **same model, graph-grounded context vs
+diff-only context**, on defects a diff-only reviewer is structurally blind to.
+
+```bash
+echo "LLM_PROVIDER=openai" >> .env
+echo "OPENAI_API_KEY=sk-..." >> .env
+pnpm eval --runs 5
+```
+
+That writes `eval/out/scorecard.md`, `scorecard.json` and `catch-rate.svg`. Roughly
+`5 cases x 2 arms x runs` model calls; at 5 runs that is 50 calls of about 5–7k prompt
+tokens each.
+
+**The corpus is built to be able to disprove the thesis.** Three cases carry defects only
+the graph can surface. Two are controls: `local-bug` is a defect fully visible in the diff,
+where graph context should make no difference — if it helps there too, the effect is "more
+context", not "better context". `clean-refactor` has no defect at all, and measures whether
+the extra context provokes invented findings.
+
+Scoring is deterministic and involves no model. A finding counts as identifying a defect
+when it names the same file, lands within that defect's line tolerance, and carries a
+category the defect accepts. The verdict is only called a difference when the gap between
+arms exceeds their combined run-to-run spread — a scorecard that reported any positive gap
+as a win would confirm the thesis whatever the data said.
+
+⚠️ Running with `LLM_PROVIDER=echo` completes in ~8s and reports 0.0% vs 0.0%. That is the
+harness proving it executes, not a result, and the scorecard says so at the top.
 
 ## Development
 
