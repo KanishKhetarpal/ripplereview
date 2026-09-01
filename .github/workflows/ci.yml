@@ -48,3 +48,21 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # Runs the eval end to end against the offline stub. It cannot produce a meaningful
+      # number without a model key, and it is not supposed to: what it proves is that the
+      # harness still executes — corpus repositories build, both arms run, the scorecard
+      # renders. A harness that silently stopped working would otherwise be discovered on
+      # the day someone tried to produce the real number.
+      - name: Eval harness smoke
+        run: pnpm eval --runs 1
+        env:
+          LLM_PROVIDER: echo
+
+      - name: Upload scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-scorecard
+          path: eval/out/
+          if-no-files-found: warn
