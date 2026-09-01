@@ -28,7 +28,7 @@ export class HealthController {
       stages: {
         ingest: 'implemented',
         graph: 'implemented',
-        contextAssembler: 'not-implemented',
+        contextAssembler: 'implemented',
         llmAdapter: 'implemented',
         findingParser: 'implemented',
         grounding: 'implemented',

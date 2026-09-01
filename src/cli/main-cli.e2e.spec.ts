@@ -63,13 +63,41 @@ describe.skipIf(!BUILT)('ripplereview CLI (spawned binary)', () => {
     expect(parsed).toHaveProperty('graphGrounded', true);
   });
 
-  it('refuses a real repository review with exit 2 rather than inventing a result', () => {
-    const result = run(['review', '.'], { LLM_PROVIDER: 'echo' });
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain('ripplereview:');
-    expect(result.stderr).toContain('Phase 1');
-    expect(result.stdout).toBe('');
-  });
+  it('reviews a real repository, grounded in the graph', () => {
+    const fixture = buildFixtureRepo();
+    try {
+      const result = run(['--json', 'review', fixture.path], { LLM_PROVIDER: 'echo' });
+      expect(result.status).toBe(0);
+
+      const review = JSON.parse(result.stdout) as {
+        graphGrounded: boolean;
+        evidence: { id: string; kind: string }[];
+      };
+      expect(review.graphGrounded).toBe(true);
+      expect(review.evidence.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(fixture.path, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('runs the diff-only baseline when asked, and says so in the output', () => {
+    const fixture = buildFixtureRepo();
+    try {
+      const result = run(['--json', 'review', fixture.path, '--diff-only'], {
+        LLM_PROVIDER: 'echo',
+      });
+      expect(result.status).toBe(0);
+
+      const review = JSON.parse(result.stdout) as {
+        graphGrounded: boolean;
+        evidence: unknown[];
+      };
+      expect(review.graphGrounded).toBe(false);
+      expect(review.evidence).toEqual([]);
+    } finally {
+      rmSync(fixture.path, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('reports a bad environment as a clean message with exit 2, not a stack trace', () => {
     const result = run(['config'], { LLM_PROVIDER: 'openai', OPENAI_API_KEY: '' });
@@ -80,10 +108,12 @@ describe.skipIf(!BUILT)('ripplereview CLI (spawned binary)', () => {
     expect(result.stderr).not.toContain('Module._compile');
   });
 
-  it('reports an unimplemented provider as a clean message with exit 2', () => {
-    const result = run(['demo'], { LLM_PROVIDER: 'gemini', GOOGLE_API_KEY: 'test-key' });
+  it('refuses a vendor provider with no key, before any network call is attempted', () => {
+    // The check is config-time, not request-time: failing here costs nothing, whereas
+    // failing at the first API call has already paid for parsing the whole repository.
+    const result = run(['demo'], { LLM_PROVIDER: 'gemini', GOOGLE_API_KEY: '' });
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('not implemented yet');
+    expect(result.stderr).toContain('GOOGLE_API_KEY');
   });
 
   it('computes a real blast radius over the fixture repository', () => {
