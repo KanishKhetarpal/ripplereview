@@ -55,4 +55,10 @@ export interface ReviewContext {
     /** True when the graph engine ran; false for a diff-only baseline review. */
     graphGrounded: boolean;
   };
+  /**
+   * True when whole files were omitted from the diff to fit the budget. The model is told
+   * in the prompt text as well; this is for the run record, so a thin review can be
+   * explained after the fact rather than looking like the change was small.
+   */
+  truncatedDiff: boolean;
 }
