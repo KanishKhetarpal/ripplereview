@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ContextModule } from '../context/context.module';
 import { GraphModule } from '../graph/graph.module';
 import { IngestModule } from '../ingest/ingest.module';
 import { LlmModule } from '../llm/llm.module';
@@ -9,7 +10,7 @@ import { ReviewController } from './review.controller';
 import { ReviewService } from './review.service';
 
 @Module({
-  imports: [LlmModule, GraphModule, IngestModule],
+  imports: [LlmModule, GraphModule, IngestModule, ContextModule],
   controllers: [ReviewController],
   providers: [ReviewService, ImpactService, ReportRenderer, ImpactRenderer],
   exports: [ReviewService, ImpactService, ReportRenderer, ImpactRenderer],

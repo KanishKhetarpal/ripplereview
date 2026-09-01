@@ -120,23 +120,30 @@ export function buildProgram(): Command {
     .option('--head <ref>', 'head git ref', 'HEAD')
     .option('--diff-only', 'skip the graph engine (the eval baseline)', false)
     .description('review the change between two refs')
-    .action(async (repo: string, cmd: { base: string; head: string; diffOnly: boolean }) => {
-      const globals = program.opts<GlobalOptions>();
-      try {
-        await withApp(globals, async ({ reviews, renderer }) => {
-          const result = await reviews.run({
-            repoPath: repo,
-            baseRef: cmd.base,
-            headRef: cmd.head,
-            diffOnly: cmd.diffOnly,
+    .option('--hops <n>', 'how far out to walk the blast radius', parseHops)
+    .action(
+      async (
+        repo: string,
+        cmd: { base: string; head: string; diffOnly: boolean; hops?: number },
+      ) => {
+        const globals = program.opts<GlobalOptions>();
+        try {
+          await withApp(globals, async ({ reviews, renderer }) => {
+            const result = await reviews.run({
+              repoPath: repo,
+              baseRef: cmd.base,
+              headRef: cmd.head,
+              diffOnly: cmd.diffOnly,
+              maxHops: cmd.hops,
+            });
+            emit(result, renderer, globals);
           });
-          emit(result, renderer, globals);
-        });
-        process.exit(EXIT_OK);
-      } catch (error) {
-        fail(error);
-      }
-    });
+          process.exit(EXIT_OK);
+        } catch (error) {
+          fail(error);
+        }
+      },
+    );
 
   program
     .command('impact')

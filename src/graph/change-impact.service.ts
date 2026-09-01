@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { Project } from 'ts-morph';
+import { Node, Project } from 'ts-morph';
 import {
   ChangeImpact,
   CycleImpact,
@@ -27,6 +27,20 @@ export interface ComputeImpactOptions {
   maxHops: number;
 }
 
+/**
+ * The impact plus the working material behind it.
+ *
+ * The context assembler needs the loaded project and the changed declarations to quote the
+ * type definitions the change refers to. Re-loading the project there would cost a second
+ * parse of the whole repository — measured at 741ms and 160MB on a 677-file repo — to
+ * rebuild something this service is already holding.
+ */
+export interface ImpactAnalysis {
+  impact: ChangeImpact;
+  project: Project;
+  changedDeclarations: Node[];
+}
+
 @Injectable()
 export class ChangeImpactService {
   private readonly logger = new Logger(ChangeImpactService.name);
@@ -41,7 +55,12 @@ export class ChangeImpactService {
     private readonly git: GitRepoService,
   ) {}
 
+  /** Convenience for callers that only want the facts. */
   async compute(changeSet: ChangeSet, options: ComputeImpactOptions): Promise<ChangeImpact> {
+    return (await this.analyse(changeSet, options)).impact;
+  }
+
+  async analyse(changeSet: ChangeSet, options: ComputeImpactOptions): Promise<ImpactAnalysis> {
     const startedAt = Date.now();
     const repoRoot = resolve(options.repoPath).replace(/\\/g, '/');
 
@@ -58,12 +77,13 @@ export class ChangeImpactService {
       maxHops: options.maxHops,
       repoRoot,
       moduleMetrics: headMetrics,
+      moduleGraph: headGraph,
     });
 
     const rules = this.loadRules(repoRoot);
     const baseEdges = new Set(baseGraph.edges.map(edgeKey));
 
-    return {
+    const impact: ChangeImpact = {
       repo: { root: repoRoot, baseRef: changeSet.baseRef, headRef: changeSet.headRef },
       changedFiles: changeSet.files.map((file) => file.path),
       changedSymbols: resolved.symbols,
@@ -71,14 +91,24 @@ export class ChangeImpactService {
       cycles: this.compareCycles(baseGraph, headGraph),
       layerViolations: this.violations(headGraph, rules, baseEdges),
       instabilityDeltas: this.instabilityDeltas(changeSet, headMetrics, baseMetrics),
+      unanalysedFiles: resolved.unparsed,
       stats: {
         hopLimit: options.maxHops,
+        warmUpMs: radius.warmUpMs,
+        lookupMs: radius.lookupMs,
+        lookups: radius.lookups,
         moduleCount: headGraph.nodes.length,
         edgeCount: headGraph.edges.length,
         impactedSiteCount: radius.sites.length,
         durationMs: Date.now() - startedAt,
       },
     };
+
+    const changedDeclarations = [...resolved.located.values()]
+      .map((symbol) => symbol.declaration)
+      .filter((node): node is Node => node !== undefined);
+
+    return { impact, project: loaded.project, changedDeclarations };
   }
 
   /**

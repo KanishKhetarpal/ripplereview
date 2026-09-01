@@ -17,6 +17,11 @@ export interface LocatedSymbol {
   exported: boolean;
   /** The identifier to hand the language service. Absent for module scope. */
   nameNode?: Node;
+  /**
+   * The whole declaration, not just its name — the type extractor walks it for the types
+   * the change refers to. Absent for module scope, which has no declaration.
+   */
+  declaration?: Node;
 }
 
 /** Declaration kinds a change is attributed to, innermost first. */
@@ -198,5 +203,6 @@ export function locateAtLine(
     line: declaration.getStartLineNumber(),
     exported: isExported(declaration),
     nameNode,
+    declaration,
   };
 }

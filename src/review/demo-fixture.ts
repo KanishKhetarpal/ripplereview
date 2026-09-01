@@ -49,8 +49,12 @@ export const DEMO_IMPACT: ChangeImpact = {
   ],
   layerViolations: [],
   instabilityDeltas: [],
+  unanalysedFiles: [],
   stats: {
     hopLimit: 3,
+    warmUpMs: 0,
+    lookupMs: 0,
+    lookups: 0,
     moduleCount: 24,
     edgeCount: 57,
     impactedSiteCount: 2,
@@ -104,5 +108,6 @@ export function buildDemoContext(tokenBudget: number): ReviewContext {
       headRef: DEMO_IMPACT.repo.headRef,
       graphGrounded: true,
     },
+    truncatedDiff: false,
   };
 }

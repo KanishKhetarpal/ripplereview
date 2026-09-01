@@ -1,11 +1,16 @@
-import { Injectable, NotImplementedException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { AppConfigService } from '../config/app-config.service';
+import { ContextAssemblerService } from '../context/context-assembler.service';
 import { enforceGrounding } from '../core/grounding';
+import { ChangeImpact } from '../core/types/change-impact';
 import { ReviewContext } from '../core/types/evidence';
 import { ReviewResult } from '../core/types/review-result';
+import { GitRepoService } from '../ingest/git-repo.service';
 import { LlmService } from '../llm/llm.service';
 import { DEMO_IMPACT, buildDemoContext } from './demo-fixture';
+import { ImpactService } from './impact.service';
+import { buildSystemPrompt, buildUserPrompt } from './prompt/review-prompt';
 
 export interface ReviewRequest {
   repoPath: string;
@@ -13,29 +18,123 @@ export interface ReviewRequest {
   headRef: string;
   /** Skip the graph engine entirely — the baseline the eval harness measures against. */
   diffOnly?: boolean;
+  maxHops?: number;
 }
 
-/**
- * Phase 0 wires the second half of the pipeline: a review context goes to the model, the
- * response is validated and grounded, and a `ReviewResult` comes back. The first half —
- * ingest, graph engine, context assembler — is not built yet, so `run()` refuses rather
- * than fabricating an empty impact and calling it a review.
- */
 @Injectable()
 export class ReviewService {
+  private readonly logger = new Logger(ReviewService.name);
+
   constructor(
     private readonly llm: LlmService,
     private readonly config: AppConfigService,
+    private readonly impacts: ImpactService,
+    private readonly assembler: ContextAssemblerService,
+    private readonly git: GitRepoService,
   ) {}
 
-  run(_request: ReviewRequest): Promise<ReviewResult> {
-    throw new NotImplementedException(
-      'Reviewing a real repository needs the ingest + graph engine (Phase 1) and the ' +
-        'context assembler (Phase 2). Run `ripplereview demo` to exercise the parts that exist.',
-    );
+  /**
+   * The whole pipeline: ingest, graph, assemble, review, ground.
+   *
+   * `diffOnly` is the eval baseline and takes the same path from the assembler onwards —
+   * same prompt, same budget, same parser, same grounding. The two arms differ in exactly
+   * one thing, the evidence block, which is what makes the Phase 3 comparison mean
+   * anything at all.
+   */
+  async run(request: ReviewRequest): Promise<ReviewResult> {
+    const startedAt = Date.now();
+    const system = buildSystemPrompt();
+
+    const { context, impact } = request.diffOnly
+      ? await this.diffOnlyContext(request, system)
+      : await this.groundedContext(request, system);
+
+    const completion = await this.llm.reviewStructured(system, buildUserPrompt(context));
+    const grounding = enforceGrounding(completion.findings, context.evidence);
+
+    if (grounding.rejected.length > 0) {
+      this.logger.warn(
+        `${grounding.rejected.length} finding(s) dropped as ungrounded: ` +
+          grounding.rejected.map((r) => r.reason).join(', '),
+      );
+    }
+
+    return {
+      runId: randomUUID(),
+      createdAt: new Date().toISOString(),
+      repo: {
+        root: context.meta.repoRoot,
+        baseRef: context.meta.baseRef,
+        headRef: context.meta.headRef,
+      },
+      graphGrounded: context.meta.graphGrounded,
+      findings: grounding.kept,
+      rejected: grounding.rejected,
+      evidence: context.evidence,
+      impact,
+      llm: {
+        provider: completion.provider,
+        model: completion.model,
+        usage: completion.usage,
+        latencyMs: completion.totalLatencyMs,
+        attempts: completion.attempts,
+      },
+      totalDurationMs: Date.now() - startedAt,
+    };
   }
 
-  /** Runs the built half of the pipeline over a fixed, clearly-labelled fixture change. */
+  private async groundedContext(
+    request: ReviewRequest,
+    system: string,
+  ): Promise<{ context: ReviewContext; impact: ChangeImpact }> {
+    const analysis = await this.impacts.analyse({
+      repoPath: request.repoPath,
+      baseRef: request.baseRef,
+      headRef: request.headRef,
+      maxHops: request.maxHops,
+    });
+
+    const context = this.assembler.assemble(analysis.impact, analysis.changeSet.rawDiff, {
+      maxTokens: this.config.contextTokenBudget,
+      reserveForResponse: this.config.maxOutputTokens,
+      systemPromptTokens: this.assembler.countTokens(system),
+      repoRoot: analysis.impact.repo.root,
+      project: analysis.project,
+      changedDeclarations: analysis.changedDeclarations,
+    });
+
+    return { context, impact: analysis.impact };
+  }
+
+  /**
+   * The baseline: the same diff, no graph.
+   *
+   * The graph engine is not run at all — not run and then discarded. Timing and cost are
+   * part of what the eval reports, and a baseline that silently paid for the analysis it
+   * claims not to use would make the comparison dishonest in our favour.
+   */
+  private async diffOnlyContext(
+    request: ReviewRequest,
+    system: string,
+  ): Promise<{ context: ReviewContext; impact: ChangeImpact | null }> {
+    const changeSet = await this.git.changeSet(request.repoPath, request.baseRef, request.headRef);
+
+    const context = this.assembler.assembleDiffOnly(
+      changeSet.rawDiff,
+      request.baseRef,
+      request.headRef,
+      {
+        maxTokens: this.config.contextTokenBudget,
+        reserveForResponse: this.config.maxOutputTokens,
+        systemPromptTokens: this.assembler.countTokens(system),
+        repoRoot: request.repoPath,
+      },
+    );
+
+    return { context, impact: null };
+  }
+
+  /** Runs the pipeline over a fixed, clearly-labelled fixture change. */
   async runDemo(): Promise<ReviewResult> {
     const startedAt = Date.now();
     const context = buildDemoContext(this.config.contextTokenBudget);
@@ -44,7 +143,6 @@ export class ReviewService {
       buildSystemPrompt(),
       buildUserPrompt(context),
     );
-
     const grounding = enforceGrounding(completion.findings, context.evidence);
 
     return {
@@ -70,26 +168,4 @@ export class ReviewService {
       totalDurationMs: Date.now() - startedAt,
     };
   }
-}
-
-/**
- * A placeholder prompt. The real one — with the grounding contract, category definitions
- * and few-shot calibration — is Phase 2 work; this exists only so the demo has something
- * to send.
- */
-export function buildSystemPrompt(): string {
-  return [
-    'You are a senior code reviewer.',
-    'Every structural claim you make MUST cite an evidence id from the EVIDENCE block.',
-    'Never assert a call site, dependency or cycle that is not in the evidence.',
-    'Reply with only a JSON object of the form {"findings": [...]}.',
-  ].join(' ');
-}
-
-export function buildUserPrompt(context: ReviewContext): string {
-  const evidence = context.evidence
-    .map((item) => `[${item.id}] (${item.kind}) ${item.summary}`)
-    .join('\n');
-
-  return ['## DIFF', context.diff, '', '## EVIDENCE', evidence].join('\n');
 }
