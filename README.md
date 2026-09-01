@@ -10,13 +10,15 @@ crossed a layer boundary.
 RippleReview computes that blast radius deterministically from the repository's dependency
 graph and hands the model **cited evidence** alongside the diff. Same model, better input.
 
-> **Status: Phase 1.** The graph engine works: point `ripplereview impact` at a repository
-> and it computes the real blast radius of a change, the cycles the change introduced, and
-> any architecture rule it broke — all deterministically, with no model involved. The context
-> assembler and the real LLM providers are Phase 2, so `ripplereview review` still refuses
-> and names the missing phase rather than returning an empty result. See [PLAN.md](PLAN.md)
-> for the roadmap and the measurements behind the design, and `GET /api/v1/health` for the
-> live stage report.
+> **Status: Phase 2.** The pipeline runs end to end: `ripplereview review` computes the
+> blast radius, packs it into a token budget as cited evidence, sends it to the model, and
+> drops any structural finding that is not grounded in that evidence. `--diff-only` runs the
+> same pipeline with the evidence removed — the baseline Phase 3 will measure against.
+>
+> **No live model call has been made yet.** There is no OpenAI or Google key on the machine
+> this was built on. Both providers are tested against a real local HTTP server, including
+> every error path, but the default provider is still the offline `echo` stub. See
+> [Known limits](#known-limits).
 
 ---
 
@@ -112,10 +114,11 @@ ripplereview [--json] [--no-color] [-v] <command>
                   --base <ref>   default HEAD~1
                   --head <ref>   default HEAD, and must be the checked-out revision
                   --hops <n>     how far to walk (default BLAST_RADIUS_MAX_HOPS)
-  review <repo>   review the change between two refs (Phase 2)
+  review <repo>   the full pipeline: graph, assemble, review, ground
                   --base <ref>   default HEAD~1
-                  --head <ref>   default HEAD
-                  --diff-only    skip the graph engine (the eval baseline)
+                  --head <ref>   default HEAD, and must be the checked-out revision
+                  --hops <n>     how far to walk (default BLAST_RADIUS_MAX_HOPS)
+                  --diff-only    skip the graph engine entirely (the eval baseline)
   demo            run the implemented stages over a fixture change
   config          print the resolved configuration
 ```
@@ -136,7 +139,7 @@ Exit codes are a contract with CI:
 |---|---|
 | `GET /api/v1/health` | live report of which pipeline stages are implemented |
 | `POST /api/v1/review/demo` | runs the implemented stages over the fixture change |
-| `POST /api/v1/review` | `501` until the context assembler lands (Phase 2) |
+| `POST /api/v1/review` | the full review; `400` for a bad repo or ref, `502` when the model fails |
 | `GET /api/v1/review/runs/:id` | `501` until persistence lands (Phase 4) |
 
 ---
@@ -157,8 +160,9 @@ clean error with exit code 2, never a stack trace half-way through a run.
 | `BLAST_RADIUS_MAX_HOPS` | `3` | Hops walked out from a changed symbol (Phase 1). |
 | `PORT` | `3000` | |
 
-Selecting `openai` or `gemini` today fails at boot with the phase it lands in. Falling back
-to the stub would let a run report findings that no model ever produced.
+Selecting `openai` or `gemini` without the matching key fails at boot rather than at the
+first API call — by which point the graph engine has already parsed the whole repository.
+Falling back to the stub would let a run report findings that no model ever produced.
 
 ---
 
@@ -176,14 +180,48 @@ An edge matching both sides is reported, and flagged separately when the change 
 is what created it. A malformed line is an error, not a skip — a rule silently ignored is a
 rule its author believes is protecting them.
 
+## How the context is built
+
+The assembler is the part that makes this different from a diff-only reviewer, so its
+rules are worth stating.
+
+Everything the model sees fits in `CONTEXT_TOKEN_BUDGET`, minus the response reserve, the
+system prompt, and a safety margin. Token counts come from real BPE, not a character
+heuristic — measured, the familiar `length / 4` under-counts punctuation-dense code by 41%,
+and under-counting overflows the request.
+
+The diff is always included and is capped at ~60% of the budget. Left uncapped, one large
+diff consumes everything and silently turns a graph-grounded review into the baseline it
+exists to beat. When files are dropped, the prompt says so.
+
+Evidence is ranked, then packed in rank order until the budget is gone:
+
+| Rank | Evidence |
+|---|---|
+| highest | a cycle **this change introduced** |
+| | an architecture rule **this change broke** |
+| | impacted call sites, nearest first, ties broken by module fan-in |
+| | type and interface definitions the changed code refers to |
+| | pre-existing cycles and violations |
+| lowest | instability shifts |
+
+Anything that does not fit is listed in `budget.droppedItemIds` **and** declared in the
+prompt, so the model is told the blast radius it is seeing is a lower bound rather than
+inferring that nothing else exists.
+
 ## Known limits
 
 Honest about direction: the blast radius **under-reports** rather than inventing reach.
 
+- **No live model call has been verified.** Both vendor providers are tested against a real
+  local HTTP server — path, auth header, body shape, and every error path including
+  OpenAI's `text/plain` 401 and Gemini's HTTP-400-for-a-bad-key — but no request has ever
+  reached the real services with a valid key.
 - A module-scope change (an edited import) has no declaration to look references up from, so
-  its dependents are reported at module granularity only. The output says so.
+  its dependents are walked through the module graph and reported at module granularity,
+  capped at 25 dependants.
 - A reference in a file the repository's tsconfig does not include — a sibling package in a
-  monorepo — is not found.
+  monorepo — is not found. Such files are listed in `unanalysedFiles`.
 - Dependency injection by string token, and any computed `import()`, are invisible to a
   static graph.
 - `--head` must be the checked-out revision. The graph is built from the files on disk, so

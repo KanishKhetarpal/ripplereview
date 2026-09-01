@@ -36,7 +36,8 @@ Runnable today:
 pnpm install
 pnpm build
 node dist/cli/main-cli.js impact . --base HEAD~1 --head HEAD   # the graph engine
-node dist/cli/main-cli.js demo                                 # LLM half, fixture change
+node dist/cli/main-cli.js review . --base HEAD~1 --head HEAD   # the full pipeline
+node dist/cli/main-cli.js review . --diff-only                 # the eval baseline
 node dist/cli/main-cli.js config
 node dist/main.js                                              # REST API on :3000/api/v1
 ```
@@ -55,8 +56,9 @@ node dist/main.js                                              # REST API on :30
 | Ingest: git diff, unified-diff parser, changed-symbol resolution | done | `src/ingest/`, `src/graph/symbol-locator.ts` |
 | Graph engine: module graph, blast radius, cycles, rules, instability | done | `src/graph/` |
 | `ripplereview impact` — the graph engine with no model involved | done | `src/cli/`, `src/output/impact-renderer.ts` |
-| Context assembler | **not built** | Phase 2 |
-| Real providers (OpenAI, Gemini) | **not built** | Phase 2 |
+| Context assembler: token budgeter, ranking, evidence serializer | done | `src/context/` |
+| Real providers (OpenAI, Gemini) | built, **never run against a live API** | `src/llm/providers/` |
+| `ripplereview review` — the full pipeline, and `--diff-only` baseline | done | `src/review/` |
 | Eval harness | **not built** | Phase 3 |
 | Persistence, GitHub App | **not built** | Phase 4 |
 
@@ -291,31 +293,64 @@ asserted as exact SETS, not counts) and run against a real 135-file repository.
   is skipped rather than guessed at. Nest's DI-by-token is invisible to the graph, so the
   blast radius under-reports for it — accepted, and the direction to be wrong in.
 
-### Phase 2 — Context assembler + first real review
+### Phase 2 — Context assembler + first real review ✅ done
 
-The heart of the project, and the part worth talking about in an interview.
+`ripplereview review <repo>` runs ingest → graph → assemble → model → grounding, and
+`--diff-only` runs the same pipeline with the evidence block removed.
 
-Carried over from Phase 1, because they are cheap here and awkward there:
+- [x] Token budgeter with an inspectable packing strategy; every dropped item recorded in
+      `budget.droppedItemIds` and stated in the prompt.
+- [x] Ranking: introduced cycle > introduced violation > impacted sites (by hop, then
+      fan-in) > type definitions > pre-existing findings > instability.
+- [x] Type/interface definitions quoted from the project the graph engine already loaded.
+- [x] Evidence serializer: one citable `[E1] (kind) file:line summary` line per fact.
+- [x] The real system prompt: grounding contract, category and severity definitions.
+- [x] OpenAI and Gemini providers behind the same interface, with shared retry and timeout.
+- [x] `ReviewService.run()` wired end to end; `--diff-only` produces the baseline.
+- [x] Golden-context test pinning the exact assembled prompt.
+- [x] Carried over from Phase 1: CLI heap raised, warm-up reported apart from lookup cost,
+      module-scope changes walked through the reverse module graph, unanalysed files
+      reported on the result.
 
-- [ ] Raise the CLI's heap and report language-service warm-up separately from lookup cost;
-      a 677-file repository needs ~3GB for its first reference lookup.
-- [ ] Walk the module graph's reverse edges for module-scope changes, so an edited import
-      reports its dependents instead of reporting nothing.
-- [ ] Report when the tsconfig excludes files the change touches, so an under-reported blast
-      radius says so.
+**What the Phase 2 probes measured**
 
-- [ ] Token budgeter with a measurable packing strategy and explicit truncation fallbacks;
-      dropped evidence is recorded in `ContextBudget.droppedItemIds`, never dropped silently.
-- [ ] Ranking: impacted sites by (hop distance, module fan-in); type/interface definitions
-      referenced by changed and impacted code.
-- [ ] Evidence serializer: compact `[E1] (kind) summary` lines the model must cite.
-- [ ] The real system prompt: grounding contract, category definitions, calibration.
-- [ ] OpenAI provider; Gemini provider. Same interface, no vendor leaking upward.
-- [ ] Wire `ReviewService.run()` end to end; `--diff-only` produces the baseline context.
-- [ ] Golden-context tests: a fixture `ChangeImpact` must assemble to a stable, reviewed
-      prompt. This is what stops the assembler regressing invisibly.
+*Token counting.* The familiar `length / 4` heuristic is not safe for this text. Against
+real BPE (`o200k_base`): ordinary TypeScript over-counts by 8-11%, but punctuation-dense
+code **under-counts by 41%** — and under-counting overflows the model's context and fails
+the request after the graph engine has already done its work. Real BPE costs 40ms for 87k
+characters, so it is the default. Counting items separately over-counts slightly against
+counting the whole (29 vs 28 tokens on a two-part sample), which is the safe direction.
+
+The conservative fallback divisor is **1.25**, not the 2.5 first chosen. Characters per
+token by shape: tabs/newlines 6.00, typical TypeScript 4.07, punctuation 2.36, spaced
+characters 2.00, minified JS 1.71, base64 1.63, symbols 1.50, **emoji 1.25**. The first
+guess assumed punctuation-dense code was the worst case; it is not, and a comment
+containing emoji would have overflowed.
+
+*Provider wire formats*, verified against the live APIs without a key:
+
+- OpenAI's endpoint is right (401, while a deliberately mistyped path gives 404) and it
+  serves its **401 body as `text/plain`** — a content-type-driven `.json()` would throw on
+  the one response that explains the failure.
+- Gemini reports an invalid key as **HTTP 400, not 401**, with `status:
+  "INVALID_ARGUMENT"` and a nested `reason: "API_KEY_INVALID"`. Classifying errors by
+  status alone would report a bad key as a malformed request.
+
+*Cost of grounding*, measured on a 135-file repository: the grounded arm sent 6,525 prompt
+tokens in 1,839ms against the baseline's 5,013 tokens in 208ms — **+30% tokens, +1.6s**,
+for 34 cited facts the baseline has none of. Phase 3 has to weigh the catch-rate against
+exactly that.
+
+**⚠️ Unverified: no live model call has ever been made.** There is no OpenAI or Google key
+on this machine. Both providers are exercised against a real local HTTP server — the path,
+the auth header, the body shape and every error path — but "the model returns findings we
+can parse" is verified only through the deterministic echo stub. The first thing Phase 3
+must do is one real call per vendor.
 
 ### Phase 3 — Eval harness + baseline ← **the resume number**
+
+- [ ] **First: one real call per vendor.** Nothing downstream means anything until a live
+      OpenAI and a live Gemini response has been parsed, grounded and rendered end to end.
 
 - [ ] 3–5 fixture repos, each with a ground-truth defect set, weighted toward cross-module
       defects: a change that silently breaks a distant caller, a new cycle, a layering
