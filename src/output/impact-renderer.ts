@@ -46,10 +46,26 @@ export class ImpactRenderer {
       paint(
         'dim',
         `${impact.stats.moduleCount} modules, ${impact.stats.edgeCount} edges  |  ` +
-          `${impact.stats.hopLimit} hop limit  |  ${impact.stats.durationMs}ms`,
+          `${impact.stats.hopLimit} hop limit  |  ${impact.stats.durationMs}ms ` +
+          `(${impact.stats.lookups} lookups: ${impact.stats.warmUpMs}ms warm-up + ` +
+          `${impact.stats.lookupMs}ms)`,
       ),
     );
     lines.push('');
+
+    if (impact.unanalysedFiles.length > 0) {
+      lines.push(
+        paint(
+          'yellow',
+          `${impact.unanalysedFiles.length} changed source file(s) were not in the parsed ` +
+            'project, so their symbols are missing and the blast radius below is a lower bound:',
+        ),
+      );
+      for (const file of impact.unanalysedFiles.slice(0, 5)) {
+        lines.push(`  ${paint('dim', file)}`);
+      }
+      lines.push('');
+    }
 
     lines.push(...this.renderChangedSymbols(impact, paint, limit));
     lines.push(...this.renderCycles(impact, paint));

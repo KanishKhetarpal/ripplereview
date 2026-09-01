@@ -73,6 +73,12 @@ export interface InstabilityDelta {
 
 export interface ImpactStats {
   hopLimit: number;
+  /** First reference lookup, which pays the language service's one-time warm-up. */
+  warmUpMs: number;
+  /** Every reference lookup after the first, summed. */
+  lookupMs: number;
+  /** How many reference lookups the blast-radius walk performed. */
+  lookups: number;
   moduleCount: number;
   edgeCount: number;
   /** Sites found before the hop cap and any ranking cut. */
@@ -93,5 +99,14 @@ export interface ChangeImpact {
   cycles: CycleImpact[];
   layerViolations: LayerViolation[];
   instabilityDeltas: InstabilityDelta[];
+  /**
+   * Source files the change touched that the parsed project did not contain — excluded by
+   * the repository's tsconfig, or outside its include globs.
+   *
+   * Their symbols are missing from the analysis, so the blast radius is a lower bound.
+   * Carried on the result rather than only logged: a reviewer reading a thin report needs
+   * to be able to tell "nothing depends on this" from "we could not see the files that do".
+   */
+  unanalysedFiles: string[];
   stats: ImpactStats;
 }

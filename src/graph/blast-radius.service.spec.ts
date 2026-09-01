@@ -2,7 +2,8 @@ import { Project } from 'ts-morph';
 import { describe, expect, it } from 'vitest';
 import { ModuleMetrics } from '../core/types/change-impact';
 import { BlastRadiusService } from './blast-radius.service';
-import { LocatedSymbol, locateAtLine } from './symbol-locator';
+import { ModuleGraph } from './interfaces/module-graph.interface';
+import { LocatedSymbol, MODULE_SCOPE, locateAtLine } from './symbol-locator';
 
 const ROOT = '/repo';
 
@@ -217,5 +218,105 @@ describe('BlastRadiusService', () => {
     });
 
     expect(result.sites).toEqual([]);
+  });
+});
+
+describe('BlastRadiusService and module-scope changes', () => {
+  const moduleGraph: ModuleGraph = {
+    nodes: ['src/core.ts', 'src/mid.ts', 'src/top.ts', 'src/unrelated.ts'].map((id) => ({
+      id,
+      externalImports: [],
+    })),
+    edges: [
+      { from: 'src/mid.ts', to: 'src/core.ts', specifier: './core' },
+      { from: 'src/top.ts', to: 'src/mid.ts', specifier: './mid' },
+    ],
+  };
+
+  /** A module-scope change: an edited import, with no declaration to look up. */
+  const moduleScopeChange: LocatedSymbol = {
+    id: `src/core.ts#${MODULE_SCOPE}`,
+    name: MODULE_SCOPE,
+    kind: 'unknown',
+    file: 'src/core.ts',
+    line: 1,
+    exported: true,
+  };
+
+  const project = new Project({ useInMemoryFileSystem: true });
+
+  const walk = (maxHops: number): ReturnType<BlastRadiusService['compute']> =>
+    service.compute(project, [moduleScopeChange], {
+      maxHops,
+      repoRoot: ROOT,
+      moduleMetrics: noMetrics,
+      moduleGraph,
+    });
+
+  it('reports the modules that import the changed one', () => {
+    // Before this, a module-scope change reported nothing at all: there is no declaration
+    // to find references to, so the branch ended silently and an edited import looked
+    // impact-free.
+    expect(walk(3).sites.map((s) => s.file)).toContain('src/mid.ts');
+  });
+
+  it('walks transitively, so a second-order dependant is found', () => {
+    const byFile = new Map(walk(3).sites.map((s) => [s.file, s.hops]));
+    expect(byFile.get('src/mid.ts')).toBe(1);
+    expect(byFile.get('src/top.ts')).toBe(2);
+  });
+
+  it('never reports a module that does not import it', () => {
+    expect(walk(3).sites.map((s) => s.file)).not.toContain('src/unrelated.ts');
+  });
+
+  it('respects the hop limit', () => {
+    expect(walk(1).sites.map((s) => s.file)).toEqual(['src/mid.ts']);
+  });
+
+  it('reports at module granularity, which is all it actually knows', () => {
+    const [first] = walk(3).sites;
+    expect(first.symbolId).toBe(`src/mid.ts#${MODULE_SCOPE}`);
+    expect(first.line).toBe(1);
+  });
+
+  it('spends no reference lookups, since there is no declaration to look up', () => {
+    expect(walk(3).lookups).toBe(0);
+  });
+
+  it('reports nothing when no module graph is supplied', () => {
+    const result = service.compute(project, [moduleScopeChange], {
+      maxHops: 3,
+      repoRoot: ROOT,
+      moduleMetrics: noMetrics,
+    });
+    expect(result.sites).toEqual([]);
+  });
+
+  it('caps how many dependants it lists, so a hub module cannot drown the evidence', () => {
+    const wide: ModuleGraph = {
+      nodes: [
+        { id: 'src/core.ts', externalImports: [] },
+        ...Array.from({ length: 200 }, (_, i) => ({
+          id: `src/dep${i}.ts`,
+          externalImports: [],
+        })),
+      ],
+      edges: Array.from({ length: 200 }, (_, i) => ({
+        from: `src/dep${i}.ts`,
+        to: 'src/core.ts',
+        specifier: './core',
+      })),
+    };
+
+    const result = service.compute(project, [moduleScopeChange], {
+      maxHops: 3,
+      repoRoot: ROOT,
+      moduleMetrics: noMetrics,
+      moduleGraph: wide,
+      maxModuleDependants: 5,
+    });
+
+    expect(result.sites).toHaveLength(5);
   });
 });
