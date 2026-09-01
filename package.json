@@ -24,7 +24,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:cov": "vitest run --coverage"
+    "test:cov": "vitest run --coverage",
+    "eval": "node --max-old-space-size=8192 -r ts-node/register/transpile-only eval/main.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.22",
