@@ -54,4 +54,21 @@ export class AppConfigService {
   get blastRadiusMaxHops(): number {
     return this.get('BLAST_RADIUS_MAX_HOPS');
   }
+
+  /** Undefined means runs are not persisted. */
+  get databaseUrl(): string | undefined {
+    return this.get('DATABASE_URL');
+  }
+
+  get githubWebhookSecret(): string | undefined {
+    return this.get('GITHUB_WEBHOOK_SECRET');
+  }
+
+  get githubToken(): string | undefined {
+    return this.get('GITHUB_TOKEN');
+  }
+
+  get failOn(): Env['REVIEW_FAIL_ON'] {
+    return this.get('REVIEW_FAIL_ON');
+  }
 }
