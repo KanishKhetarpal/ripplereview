@@ -9,6 +9,7 @@ import { ReviewResult } from '../core/types/review-result';
 import { ImpactRenderer } from '../output/impact-renderer';
 import { ReportRenderer } from '../output/report-renderer';
 import { ImpactService } from '../review/impact.service';
+import { FailOn, blockingFindings } from '../review/severity-gate';
 import { ReviewService } from '../review/review.service';
 
 /**
@@ -18,6 +19,7 @@ import { ReviewService } from '../review/review.service';
  *   2  the review could not run
  */
 const EXIT_OK = 0;
+const EXIT_BLOCKING_FINDINGS = 1;
 const EXIT_ERROR = 2;
 
 interface GlobalOptions {
@@ -87,6 +89,14 @@ function emitImpact(impact: ChangeImpact, renderer: ImpactRenderer, options: Glo
 `);
 }
 
+function parseFailOn(value: string): FailOn {
+  const allowed: FailOn[] = ['critical', 'high', 'medium', 'low', 'info', 'never'];
+  if (!allowed.includes(value as FailOn)) {
+    throw new InvalidArgumentError(`must be one of: ${allowed.join(', ')}`);
+  }
+  return value as FailOn;
+}
+
 /** Commander hands option values through as strings; a bad one must not become NaN. */
 function parseHops(value: string): number {
   const hops = Number(value);
@@ -121,14 +131,19 @@ export function buildProgram(): Command {
     .option('--diff-only', 'skip the graph engine (the eval baseline)', false)
     .description('review the change between two refs')
     .option('--hops <n>', 'how far out to walk the blast radius', parseHops)
+    .option(
+      '--fail-on <severity>',
+      'exit 1 when a finding is at or above this severity (default REVIEW_FAIL_ON)',
+      parseFailOn,
+    )
     .action(
       async (
         repo: string,
-        cmd: { base: string; head: string; diffOnly: boolean; hops?: number },
+        cmd: { base: string; head: string; diffOnly: boolean; hops?: number; failOn?: FailOn },
       ) => {
         const globals = program.opts<GlobalOptions>();
         try {
-          await withApp(globals, async ({ reviews, renderer }) => {
+          await withApp(globals, async ({ reviews, renderer, config }) => {
             const result = await reviews.run({
               repoPath: repo,
               baseRef: cmd.base,
@@ -137,6 +152,27 @@ export function buildProgram(): Command {
               maxHops: cmd.hops,
             });
             emit(result, renderer, globals);
+
+            const failOn: FailOn = cmd.failOn ?? config.failOn;
+            const blocking = blockingFindings(result.findings, failOn);
+
+            if (blocking.length > 0) {
+              // Exit 1, not 2: the review RAN and found something. A build that cannot
+              // tell "your code has a problem" from "the reviewer crashed" will end up
+              // ignoring both.
+              process.stderr.write(
+                `
+${blocking.length} finding(s) at or above "${failOn}" — failing.
+`,
+              );
+              for (const finding of blocking) {
+                process.stderr.write(
+                  `  ${finding.severity}  ${finding.file}:${finding.line}  ${finding.summary}
+`,
+                );
+              }
+              process.exit(EXIT_BLOCKING_FINDINGS);
+            }
           });
           process.exit(EXIT_OK);
         } catch (error) {

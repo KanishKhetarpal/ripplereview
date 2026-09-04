@@ -1,0 +1,83 @@
+name: RippleReview
+description: >-
+  Graph-grounded code review. Computes what a change actually reaches across the
+  repository and reviews it with that as cited evidence.
+author: Kanish Khetarpal
+
+branding:
+  icon: git-pull-request
+  color: blue
+
+inputs:
+  base-ref:
+    description: Base git ref to diff against.
+    required: false
+    default: ''
+  fail-on:
+    description: >-
+      Exit 1 when a finding is at or above this severity: critical, high, medium, low,
+      info, or never.
+    required: false
+    default: high
+  hops:
+    description: How far out to walk the blast radius.
+    required: false
+    default: '3'
+  llm-provider:
+    description: 'echo, openai or gemini. `echo` is the offline stub and reviews nothing.'
+    required: false
+    default: openai
+  model:
+    description: Model id. Empty uses the provider default.
+    required: false
+    default: ''
+
+outputs:
+  findings:
+    description: Number of findings the review kept after grounding.
+    value: ${{ steps.review.outputs.findings }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the base ref
+      id: base
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.base-ref }}" ]; then
+          echo "ref=${{ inputs.base-ref }}" >> "$GITHUB_OUTPUT"
+        elif [ -n "${GITHUB_BASE_REF:-}" ]; then
+          # A pull request: diff against the target branch, not the previous commit.
+          git fetch --no-tags --depth=50 origin "$GITHUB_BASE_REF"
+          echo "ref=origin/$GITHUB_BASE_REF" >> "$GITHUB_OUTPUT"
+        else
+          echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Review
+      id: review
+      shell: bash
+      env:
+        LLM_PROVIDER: ${{ inputs.llm-provider }}
+        LLM_MODEL: ${{ inputs.model }}
+      run: |
+        set -uo pipefail
+        node "${{ github.action_path }}/dist/cli/main-cli.js" review . \
+          --base "${{ steps.base.outputs.ref }}" \
+          --head HEAD \
+          --hops "${{ inputs.hops }}" \
+          --fail-on "${{ inputs.fail-on }}" \
+          --json > review.json
+        status=$?
+
+        # Exit 1 means the review ran and found something blocking; 2 means it could not
+        # run. Collapsing them would make a broken reviewer look like a failing build.
+        if [ "$status" -eq 2 ]; then
+          echo "::error::RippleReview could not run"
+          exit 2
+        fi
+
+        count=$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('review.json','utf8')).findings.length))")
+        echo "findings=$count" >> "$GITHUB_OUTPUT"
+        exit "$status"
