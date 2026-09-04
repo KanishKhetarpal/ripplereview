@@ -6,7 +6,9 @@ import { DomainErrorFilter } from './common/domain-error.filter';
 import { AppConfigService } from './config/app-config.service';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // rawBody keeps the exact bytes Express received. GitHub signs what it sent, so a
+  // re-serialised body would fail every signature check.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   app.setGlobalPrefix('api/v1');
   app.useGlobalFilters(new DomainErrorFilter());
   // No global pipe: bodies are validated per-route with ZodValidationPipe. Nest's

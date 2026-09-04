@@ -7,6 +7,7 @@ import { ChangeImpact } from '../core/types/change-impact';
 import { ReviewContext } from '../core/types/evidence';
 import { ReviewResult } from '../core/types/review-result';
 import { GitRepoService } from '../ingest/git-repo.service';
+import { RunStoreService } from '../db/run-store.service';
 import { LlmService } from '../llm/llm.service';
 import { DEMO_IMPACT, buildDemoContext } from './demo-fixture';
 import { ImpactService } from './impact.service';
@@ -31,6 +32,7 @@ export class ReviewService {
     private readonly impacts: ImpactService,
     private readonly assembler: ContextAssemblerService,
     private readonly git: GitRepoService,
+    private readonly runs: RunStoreService,
   ) {}
 
   /**
@@ -59,7 +61,7 @@ export class ReviewService {
       );
     }
 
-    return {
+    const result: ReviewResult = {
       runId: randomUUID(),
       createdAt: new Date().toISOString(),
       repo: {
@@ -81,6 +83,13 @@ export class ReviewService {
       },
       totalDurationMs: Date.now() - startedAt,
     };
+
+    // Filed if a database is configured, and never at the cost of the review: a storage
+    // failure has already been paid for in graph analysis and model tokens, and losing
+    // the result over it would be the worse outcome.
+    await this.runs.save(result);
+
+    return result;
   }
 
   private async groundedContext(

@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { BudgetTooSmallError } from '../context/context-assembler.service';
+import { PersistenceDisabledError } from '../db/run-store.service';
+import { GitHubApiError } from '../github/github-client';
 import { NotAGitRepositoryError, UnknownRefError } from '../ingest/git-repo.service';
 import { LlmResponseError } from '../llm/llm.service';
 import { LlmHttpError } from '../llm/providers/http-llm.provider';
@@ -75,6 +77,25 @@ export class DomainErrorFilter implements ExceptionFilter {
       return {
         status: HttpStatus.INTERNAL_SERVER_ERROR,
         error: 'Misconfigured',
+        message: exception.message,
+      };
+    }
+
+    // Asking for a stored run when nothing is being stored. 503 rather than 404: the run
+    // may well exist, we simply have nowhere to look, and a 404 would tell the caller the
+    // opposite of the truth.
+    if (exception instanceof PersistenceDisabledError) {
+      return {
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        error: 'Persistence Disabled',
+        message: exception.message,
+      };
+    }
+
+    if (exception instanceof GitHubApiError) {
+      return {
+        status: HttpStatus.BAD_GATEWAY,
+        error: 'GitHub Error',
         message: exception.message,
       };
     }
