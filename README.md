@@ -10,7 +10,7 @@ crossed a layer boundary.
 RippleReview computes that blast radius deterministically from the repository's dependency
 graph and hands the model **cited evidence** alongside the diff. Same model, better input.
 
-> **Status: Phase 3 — harness built, number not yet produced.** The pipeline runs end to
+> **Status: Phase 4 — integration built, eval number not yet produced.** The pipeline runs end to
 > end and the eval harness scores graph-grounded review against a diff-only baseline on a
 > five-case defect corpus. What is missing is a model: there is no API key on the machine
 > this was built on, so **no live model call has ever been made** and the scorecard has only
@@ -137,7 +137,9 @@ Exit codes are a contract with CI:
 | `GET /api/v1/health` | live report of which pipeline stages are implemented |
 | `POST /api/v1/review/demo` | runs the implemented stages over the fixture change |
 | `POST /api/v1/review` | the full review; `400` for a bad repo or ref, `502` when the model fails |
-| `GET /api/v1/review/runs/:id` | `501` until persistence lands (Phase 4) |
+| `GET /api/v1/review/runs/:id` | a stored run; `503` when no database is configured |
+| `GET /api/v1/review/runs` | recent runs, newest first |
+| `POST /api/v1/webhooks/github` | verifies `X-Hub-Signature-256`; `401` on any failure |
 
 ---
 
@@ -215,6 +217,12 @@ Honest about direction: the blast radius **under-reports** rather than inventing
   and every error path including OpenAI's `text/plain` 401 and Gemini's
   HTTP-400-for-a-bad-key — but no request has ever reached the real services with a valid
   key, so every scorecard so far is a stub run.
+- **No review has ever been posted to a real pull request.** The GitHub client's paths,
+  auth header and error shapes were probed against the live API without creating anything,
+  and the review rendering is fully tested, but the posting path is unexercised.
+- **A webhook delivery does not trigger a review.** The endpoint verifies the signature and
+  acknowledges; dispatching needs a queue, because GitHub retries after ten seconds and a
+  review takes longer than that. `GET /health` reports this as its own stage.
 - The corpus is **five small purpose-built repositories**. It is enough to detect a large
   effect and not enough to measure a small one; scaling it to mutations of a real OSS
   repository is the obvious next step.
@@ -259,6 +267,40 @@ as a win would confirm the thesis whatever the data said.
 
 ⚠️ Running with `LLM_PROVIDER=echo` completes in ~8s and reports 0.0% vs 0.0%. That is the
 harness proving it executes, not a result, and the scorecard says so at the top.
+
+## Using it in CI
+
+```yaml
+- uses: actions/checkout@v5
+  with:
+    fetch-depth: 0          # the reviewer needs history to diff against the base
+- uses: KanishKhetarpal/ripplereview@main
+  with:
+    fail-on: high
+  env:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+Exit 1 means the review ran and found something at or above `fail-on`. Exit 2 means it
+could not run. A pipeline that cannot tell those apart ends up ignoring both.
+
+On a pull request the Action diffs against the target branch, not `HEAD~1` — reviewing only
+the last commit of a branch would miss most of what the PR changes.
+
+### Posting to a pull request
+
+The renderer splits findings in two, and the split is forced by GitHub: an inline review
+comment can only attach to a line the diff touches, and one rejected comment fails the
+whole review request. The findings that justify this tool are about files the diff never
+mentions, so **blast-radius findings can never be inline** — they go in the summary, under
+a heading that says why.
+
+### Persistence
+
+Optional. With `DATABASE_URL` set, every run is filed with its findings, the ones the
+grounding guard dropped, and the full impact snapshot; the schema is applied at boot.
+Without it, nothing is stored and everything else works unchanged — a storage failure never
+costs you a completed review.
 
 ## Development
 

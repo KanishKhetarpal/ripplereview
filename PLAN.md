@@ -62,7 +62,10 @@ node dist/main.js                                              # REST API on :30
 | `ripplereview review` — the full pipeline, and `--diff-only` baseline | done | `src/review/` |
 | Eval harness: corpus, matcher, metrics, scorecard | done | `eval/` |
 | **The number itself** | **not produced** — needs a model key | Phase 3, blocked |
-| Persistence, GitHub App | **not built** | Phase 4 |
+| Persistence: runs, findings, impact snapshots | done | `src/db/` |
+| GitHub: webhook signature, PR review rendering, API client | done | `src/github/` |
+| Severity gating, GitHub Action, Docker image | done | `action.yml`, `Dockerfile` |
+| Dispatching a review from a webhook delivery | **not built** | needs a queue |
 
 `GET /api/v1/health` reports that table at runtime, so nothing has to be assumed from a doc.
 `ripplereview review <repo>` refuses with exit 2 and names the missing phase rather than
@@ -403,15 +406,51 @@ produce all four sentences: a win, a loss, no measurable difference, and inconcl
 reports 0.0% vs 0.0%. That is the harness working, not a negative result, and the scorecard
 says so in bold at the top. Do not quote it.
 
-### Phase 4 — GitHub PR integration + CI + persistence
+### Phase 4 — GitHub PR integration + CI + persistence ✅ mostly done
 
-- [ ] PostgreSQL: `runs`, `findings`, `impact_snapshots`, with tokens/cost/latency per run.
-- [ ] `GET /runs/:id` (currently 501).
-- [ ] GitHub App / webhook: PR opened or synchronised → review.
-- [ ] Inline review comments anchored to `file:line`; one summary comment carrying the
-      blast-radius overview and the evidence table.
-- [ ] GitHub Action wrapping the CLI; exit code 1 on findings above a severity threshold.
-- [ ] Docker image; deploy.
+- [x] PostgreSQL: `runs`, `findings`, `impact_snapshots`, with tokens, cost and latency per
+      run. **Optional** — no `DATABASE_URL` means runs are not stored, and everything else
+      still works. Requiring Postgres to review a diff on a laptop would be a strange tax.
+- [x] `GET /api/v1/review/runs/:id` and `GET /api/v1/review/runs`.
+- [x] Webhook signature verification (`X-Hub-Signature-256`), failing closed at every step.
+- [x] PR review rendering: inline comments plus one summary comment.
+- [x] GitHub API client, with the error shapes verified against the live API.
+- [x] Severity gating: `--fail-on`, exit 1 for blocking findings, 2 for could-not-run.
+- [x] GitHub Action (`action.yml`), resolving the PR base ref rather than `HEAD~1`.
+- [x] Docker image, **built and run in CI** — no Docker daemon on the machine this was
+      written on, so the runner is where it is actually verified.
+- [ ] **Dispatching a review from a webhook delivery.** The endpoint verifies and
+      acknowledges; nothing runs a review yet.
+
+**Why the webhook does not review inline.** A review takes seconds to minutes — a
+repository has to be parsed and a model called — and GitHub times a delivery out after ten
+seconds and then retries it. Reviewing inline would guarantee duplicate reviews on every
+large change. The honest intermediate state is to acknowledge and log, which is what it
+does; `GET /health` reports `githubReviewDispatch: not-implemented` separately from
+`githubWebhook: implemented`, because one combined "github: implemented" would describe a
+working integration that stops half way.
+
+**The constraint that shaped the comment renderer.** GitHub only accepts an inline review
+comment on a line the diff touches, and a single rejected comment fails the whole review
+request — taking every placeable comment down with it. But the findings that justify this
+tool are precisely the ones about files the diff never mentions. So blast-radius findings
+can *never* be inline; they go in the summary under their own heading. The set of
+commentable lines comes from the diff this tool already parsed, not from a second call to
+`GET /pulls/:n/files`, so there is no way for the two to disagree about which lines exist.
+
+**Verified against real dependencies.** Postgres is a CI service container, and the
+persistence tests assert things that belong to the database — that the schema applies, that
+a foreign key cascades, that a `text[]` round-trips, that a rolled-back transaction leaves
+nothing behind. They skip locally and are a hard failure under `CI=true`. The Docker image
+is built and run on the runner, including a check that `git` is present, because git is a
+runtime dependency the build stage does not need and its absence would surface on the first
+review rather than at build time.
+
+**⚠️ Not verified: posting to a real pull request.** The client's paths, auth header and
+error shapes were probed against the live GitHub API without creating anything (a review on
+a nonexistent PR answers 404, a bad token answers 401), but no review has ever been posted.
+Doing so would publish content to a public repository, which is the author's call rather
+than a build step.
 
 ### Phase 5 — Optional stretch
 
