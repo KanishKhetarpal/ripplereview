@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+eval/out
+.git
+.github
+.probe
+*.md
+!README.md
