@@ -14,10 +14,30 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     env:
-      # Makes the CLI end-to-end suite a hard failure if `dist` is missing, instead of a
-      # skip. A skipped test on a build server means the pipeline is vouching for
-      # behaviour that nothing ran.
+      # Makes the CLI end-to-end and database suites a hard failure if their dependency is
+      # missing, instead of a skip. A skipped test on a build server means the pipeline is
+      # vouching for behaviour that nothing ran.
       CI: 'true'
+      DATABASE_URL: postgres://ripple:ripple@localhost:5432/ripplereview_test
+
+    # A real PostgreSQL. The persistence tests assert things that belong to the database —
+    # that the schema applies, that a foreign key cascades, that a text[] round-trips, that
+    # a rolled-back transaction leaves nothing behind — and a mocked pool would only assert
+    # that the SQL matches the SQL that was written.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ripple
+          POSTGRES_PASSWORD: ripple
+          POSTGRES_DB: ripplereview_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ripple -d ripplereview_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - uses: actions/checkout@v5
@@ -58,6 +78,20 @@ jobs:
         run: pnpm eval --runs 1
         env:
           LLM_PROVIDER: echo
+
+      # Builds the image on a runner that has a Docker daemon. Without this the Dockerfile
+      # is only ever read, never executed — and the one thing it must get right, that git
+      # is present at runtime, fails on the first review rather than at build time.
+      - name: Build the Docker image
+        run: docker build -t ripplereview:ci .
+
+      - name: The image can actually run
+        run: |
+          set -euo pipefail
+          docker run --rm ripplereview:ci --version
+          # git is a runtime dependency the build stage does not need, so its absence
+          # would go unnoticed until a review shelled out to it.
+          docker run --rm --entrypoint git ripplereview:ci --version
 
       - name: Upload scorecard
         if: always()

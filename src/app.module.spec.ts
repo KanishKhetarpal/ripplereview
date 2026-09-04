@@ -40,6 +40,10 @@ describe('AppModule (real container)', () => {
     expect(report.stages.graph).toBe('implemented');
     expect(report.stages.contextAssembler).toBe('implemented');
     expect(report.stages.persistence).toBe('not-implemented');
+    expect(report.stages.githubWebhook).toBe('implemented');
+    // The webhook verifies and acknowledges; nothing dispatches a review yet, and one
+    // combined github stage would report a working integration that stops half way.
+    expect(report.stages.githubReviewDispatch).toBe('not-implemented');
     expect(report.stages.llmAdapter).toBe('implemented');
   });
 

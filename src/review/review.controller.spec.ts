@@ -37,6 +37,7 @@ describe('Review HTTP API', () => {
     expect(response.body.status).toBe('ok');
     expect(response.body.stages.contextAssembler).toBe('implemented');
     expect(response.body.stages.persistence).toBe('not-implemented');
+    expect(response.body.stages.githubWebhook).toBe('implemented');
   });
 
   it('runs the demo review over HTTP', async () => {
@@ -85,7 +86,14 @@ describe('Review HTTP API', () => {
       .expect(400);
   });
 
-  it('answers 501 for run lookup, since nothing is persisted yet', async () => {
-    await request(server()).get('/api/v1/review/runs/abc').expect(501);
+  it('answers 503 for run lookup when persistence is off, not 404', async () => {
+    // 404 would tell the caller the run does not exist. It may well exist; there is
+    // simply nowhere to look, and those lead to completely different actions.
+    const response = await request(server()).get('/api/v1/review/runs/abc').expect(503);
+    expect(JSON.stringify(response.body)).toContain('DATABASE_URL');
+  });
+
+  it('answers 503 for the run listing too', async () => {
+    await request(server()).get('/api/v1/review/runs').expect(503);
   });
 });
