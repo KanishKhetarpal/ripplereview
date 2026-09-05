@@ -39,7 +39,12 @@ describe('AppModule (real container)', () => {
     expect(report.status).toBe('ok');
     expect(report.stages.graph).toBe('implemented');
     expect(report.stages.contextAssembler).toBe('implemented');
-    expect(report.stages.persistence).toBe('not-implemented');
+    // Reflects whether a database is configured, rather than hard-coding the answer
+    // for one machine. Asserting `not-implemented` passed locally and failed in CI,
+    // where a real Postgres is wired up — the test was describing the environment.
+    expect(report.stages.persistence).toBe(
+      process.env.DATABASE_URL ? 'implemented' : 'not-implemented',
+    );
     expect(report.stages.githubWebhook).toBe('implemented');
     // The webhook verifies and acknowledges; nothing dispatches a review yet, and one
     // combined github stage would report a working integration that stops half way.

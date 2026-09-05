@@ -36,7 +36,9 @@ describe('Review HTTP API', () => {
     const response = await request(server()).get('/api/v1/health').expect(200);
     expect(response.body.status).toBe('ok');
     expect(response.body.stages.contextAssembler).toBe('implemented');
-    expect(response.body.stages.persistence).toBe('not-implemented');
+    expect(response.body.stages.persistence).toBe(
+      process.env.DATABASE_URL ? 'implemented' : 'not-implemented',
+    );
     expect(response.body.stages.githubWebhook).toBe('implemented');
   });
 
@@ -86,14 +88,59 @@ describe('Review HTTP API', () => {
       .expect(400);
   });
 
-  it('answers 503 for run lookup when persistence is off, not 404', async () => {
-    // 404 would tell the caller the run does not exist. It may well exist; there is
-    // simply nowhere to look, and those lead to completely different actions.
-    const response = await request(server()).get('/api/v1/review/runs/abc').expect(503);
-    expect(JSON.stringify(response.body)).toContain('DATABASE_URL');
+  it('rejects a malformed run id as 400, whether or not a database is configured', async () => {
+    // With persistence on, an unvalidated id reaches Postgres and raises
+    // `invalid input syntax for type uuid`, which surfaced as a bare 500.
+    await request(server()).get('/api/v1/review/runs/abc').expect(400);
   });
 
-  it('answers 503 for the run listing too', async () => {
-    await request(server()).get('/api/v1/review/runs').expect(503);
+  describe.skipIf(Boolean(process.env.DATABASE_URL))('with persistence off', () => {
+    it('answers 503 for a run lookup, not 404', async () => {
+      // 404 would tell the caller the run does not exist. It may well exist; there is
+      // simply nowhere to look, and those lead to completely different actions.
+      const response = await request(server())
+        .get('/api/v1/review/runs/11111111-1111-4111-8111-111111111111')
+        .expect(503);
+      expect(JSON.stringify(response.body)).toContain('DATABASE_URL');
+    });
+
+    it('answers 503 for the run listing too', async () => {
+      await request(server()).get('/api/v1/review/runs').expect(503);
+    });
+  });
+
+  describe.skipIf(!process.env.DATABASE_URL)('with persistence on', () => {
+    it('answers 404 for a well-formed id that names no run', async () => {
+      await request(server())
+        .get('/api/v1/review/runs/11111111-1111-4111-8111-111111111111')
+        .expect(404);
+    });
+
+    it('lists runs', async () => {
+      const response = await request(server()).get('/api/v1/review/runs').expect(200);
+      expect(Array.isArray(response.body)).toBe(true);
+    });
+
+    it('stores a review and reads it back by its run id', async () => {
+      // The full round trip the API exists for, exercised only where a database is
+      // actually present.
+      const fixture = buildFixtureRepo();
+      try {
+        const posted = await request(server())
+          .post('/api/v1/review')
+          .send({ repoPath: fixture.path, baseRef: 'HEAD~1', headRef: 'HEAD' })
+          .expect(201);
+
+        const stored = await request(server())
+          .get(`/api/v1/review/runs/${posted.body.runId}`)
+          .expect(200);
+
+        expect(stored.body.runId).toBe(posted.body.runId);
+        expect(stored.body.graphGrounded).toBe(true);
+        expect(stored.body.impact.changedSymbols.length).toBeGreaterThan(0);
+      } finally {
+        rmSync(fixture.path, { recursive: true, force: true });
+      }
+    }, 120_000);
   });
 });

@@ -41,7 +41,13 @@ function run(args: string[], env: Record<string, string> = {}): RunResult {
   };
 }
 
-describe.skipIf(!BUILT)('ripplereview CLI (spawned binary)', () => {
+/**
+ * 60s per test. Each one spawns a fresh Node process that boots the whole application
+ * container, and these run alongside the graph and corpus suites — measured at ~1s on an
+ * idle machine and observed timing out at the default while eight workers competed. A
+ * slow operation, not a broken one; a tight timeout here buys nothing but flakes.
+ */
+describe.skipIf(!BUILT)('ripplereview CLI (spawned binary)', { timeout: 60_000 }, () => {
   it('prints its version and exits 0', () => {
     const result = run(['--version']);
     expect(result.status).toBe(0);
