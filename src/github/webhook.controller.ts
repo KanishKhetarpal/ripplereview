@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { AppConfigService } from '../config/app-config.service';
+import { JobStoreService } from '../db/job-store.service';
 import { verifySignature } from './webhook-signature';
 
 export interface WebhookAck {
@@ -20,29 +21,28 @@ export interface WebhookAck {
 /**
  * The GitHub webhook door.
  *
- * It verifies, acknowledges, and stops. Reviewing takes seconds to minutes — a repository
- * has to be parsed and a model called — and GitHub times a delivery out after ten seconds
- * and retries it. Doing the work inline would guarantee duplicate reviews on every large
- * change, so the endpoint records what it would run and returns.
- *
- * ⚠️ The queue itself is not built. This acknowledges and logs; the review is not
- * dispatched. Wiring it to a worker is the remaining step, and pretending otherwise by
- * kicking off a floating promise would produce exactly the duplicate-review behaviour
- * described above.
+ * It verifies, enqueues, and returns. Reviewing takes seconds to minutes — a repository
+ * has to be cloned, parsed and sent to a model — and GitHub times a delivery out after ten
+ * seconds and then retries it. Doing the work inline would guarantee duplicate reviews on
+ * every large change; a worker drains the queue separately.
  */
 @Controller('webhooks/github')
 export class GitHubWebhookController {
   private readonly logger = new Logger(GitHubWebhookController.name);
 
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly jobs: JobStoreService,
+  ) {}
 
   @Post()
   @HttpCode(202)
-  handle(
+  async handle(
     @Req() request: Request,
     @Headers('x-hub-signature-256') signature: string | undefined,
     @Headers('x-github-event') event: string | undefined,
-  ): WebhookAck {
+    @Headers('x-github-delivery') delivery: string | undefined,
+  ): Promise<WebhookAck> {
     // The RAW body, captured by the rawBody middleware. Re-serialising the parsed object
     // would change the bytes and every signature would fail.
     const raw = (request as Request & { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
@@ -70,13 +70,74 @@ export class GitHubWebhookController {
       return { received: true, action: 'ignored', reason: `pull_request.${action}` };
     }
 
-    const number = typeof payload?.number === 'number' ? payload.number : 0;
-    const repository = payload?.repository as { full_name?: unknown } | undefined;
-    const repo = typeof repository?.full_name === 'string' ? repository.full_name : '?';
+    const job = readPullRequest(payload);
+    if (!job) {
+      // A payload we cannot read is not a signal to guess. Acknowledged so GitHub stops
+      // retrying it, and logged so the shape can be looked at.
+      this.logger.warn('pull_request payload was missing fields needed to queue a review');
+      return { received: true, action: 'ignored', reason: 'unreadable payload' };
+    }
 
-    this.logger.log(`pull_request.${action} on ${repo}#${String(number)} — review not dispatched`);
-    return { received: true, action: 'queued' };
+    if (!this.jobs.enabled) {
+      // 202 rather than 500: the delivery WAS received and verified, and retrying it will
+      // not make a database appear. Saying so is more useful than a failure GitHub will
+      // hammer for the next day.
+      this.logger.warn('no database configured, so the review was not queued');
+      return { received: true, action: 'ignored', reason: 'persistence disabled' };
+    }
+
+    const outcome = await this.jobs.enqueue({
+      // GitHub reuses the delivery id across retries, which is exactly what makes it the
+      // right idempotency key. Absent, fall back to the head sha so a missing header does
+      // not turn every retry into a fresh review.
+      deliveryId: delivery ?? `${job.owner}/${job.repo}#${job.pullNumber}@${job.headSha}`,
+      ...job,
+    });
+
+    this.logger.log(
+      `pull_request.${action} on ${job.owner}/${job.repo}#${job.pullNumber} — ${outcome}`,
+    );
+    return outcome === 'duplicate'
+      ? { received: true, action: 'ignored', reason: 'duplicate delivery' }
+      : { received: true, action: 'queued' };
   }
+}
+
+interface PullRequestFields {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  headSha: string;
+  baseRef: string;
+  cloneUrl: string;
+}
+
+/** Reads only what a review needs, and refuses the payload if any of it is missing. */
+export function readPullRequest(payload: Record<string, unknown> | null): PullRequestFields | null {
+  const pull = payload?.pull_request as
+    { head?: { sha?: unknown }; base?: { ref?: unknown } } | undefined;
+  const repository = payload?.repository as
+    { name?: unknown; clone_url?: unknown; owner?: { login?: unknown } } | undefined;
+
+  const owner = repository?.owner?.login;
+  const repo = repository?.name;
+  const cloneUrl = repository?.clone_url;
+  const headSha = pull?.head?.sha;
+  const baseRef = pull?.base?.ref;
+  const pullNumber = payload?.number;
+
+  if (
+    typeof owner !== 'string' ||
+    typeof repo !== 'string' ||
+    typeof cloneUrl !== 'string' ||
+    typeof headSha !== 'string' ||
+    typeof baseRef !== 'string' ||
+    typeof pullNumber !== 'number'
+  ) {
+    return null;
+  }
+
+  return { owner, repo, pullNumber, headSha, baseRef, cloneUrl };
 }
 
 function safeParse(raw: Buffer): Record<string, unknown> | null {

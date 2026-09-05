@@ -2,6 +2,7 @@ import { Global, Logger, Module, OnApplicationShutdown } from '@nestjs/common';
 import { Pool } from 'pg';
 import { AppConfigService } from '../config/app-config.service';
 import { MigrationRunner } from './migration-runner';
+import { JobStoreService } from './job-store.service';
 import { PG_POOL, RunStoreService } from './run-store.service';
 
 /**
@@ -44,8 +45,9 @@ import { PG_POOL, RunStoreService } from './run-store.service';
       inject: [AppConfigService, MigrationRunner],
     },
     RunStoreService,
+    JobStoreService,
   ],
-  exports: [RunStoreService, PG_POOL],
+  exports: [RunStoreService, JobStoreService, PG_POOL],
 })
 export class DbModule implements OnApplicationShutdown {
   constructor(private readonly store: RunStoreService) {}

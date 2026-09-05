@@ -1,5 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
+import { JobStoreService } from '../db/job-store.service';
 import { RunStoreService } from '../db/run-store.service';
 import { GitHubClient } from '../github/github-client';
 import { LlmService } from '../llm/llm.service';
@@ -20,6 +21,7 @@ export class HealthController {
     private readonly llm: LlmService,
     private readonly runs: RunStoreService,
     private readonly github: GitHubClient,
+    private readonly jobs: JobStoreService,
   ) {}
 
   @Get()
@@ -40,10 +42,10 @@ export class HealthController {
         persistence: this.runs.enabled ? 'implemented' : 'not-implemented',
         githubWebhook: 'implemented',
         githubReviewPosting: this.github.configured ? 'implemented' : 'not-implemented',
-        // Split from the webhook deliberately. The endpoint verifies and acknowledges;
-        // nothing dispatches a review yet, and one combined "github: implemented" would
-        // report a working integration that stops half way.
-        githubReviewDispatch: 'not-implemented',
+        // Split from the webhook deliberately: a delivery is only dispatched when a
+        // database is configured, since the queue lives there. One combined
+        // "github: implemented" would report a working integration that stops half way.
+        githubReviewDispatch: this.jobs.enabled ? 'implemented' : 'not-implemented',
       },
     };
   }

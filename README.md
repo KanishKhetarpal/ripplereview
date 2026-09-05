@@ -220,9 +220,10 @@ Honest about direction: the blast radius **under-reports** rather than inventing
 - **No review has ever been posted to a real pull request.** The GitHub client's paths,
   auth header and error shapes were probed against the live API without creating anything,
   and the review rendering is fully tested, but the posting path is unexercised.
-- **A webhook delivery does not trigger a review.** The endpoint verifies the signature and
-  acknowledges; dispatching needs a queue, because GitHub retries after ten seconds and a
-  review takes longer than that. `GET /health` reports this as its own stage.
+- **A webhook delivery is queued but the posting path is unexercised.** The endpoint
+  verifies, enqueues and returns; a worker clones the pull request, reviews it and posts.
+  The queue, the checkout and the rendering are all tested against real dependencies — the
+  final `POST /pulls/:n/reviews` is not.
 - The corpus is **five small purpose-built repositories**. It is enough to detect a large
   effect and not enough to measure a small one; scaling it to mutations of a real OSS
   repository is the obvious next step.
@@ -294,6 +295,22 @@ comment can only attach to a line the diff touches, and one rejected comment fai
 whole review request. The findings that justify this tool are about files the diff never
 mentions, so **blast-radius findings can never be inline** — they go in the summary, under
 a heading that says why.
+
+### Reviewing a pull request from a webhook
+
+`POST /api/v1/webhooks/github` verifies `X-Hub-Signature-256`, queues the delivery and
+returns 202. A worker drains the queue: it clones the pull request head, resolves the base
+to the **merge base** rather than the target branch tip, reviews, and posts.
+
+The queue lives in the same Postgres as everything else rather than in a broker. GitHub's
+delivery id is the idempotency key — a retried delivery carries the same one, so a unique
+constraint turns a retry storm into a single job — and `FOR UPDATE SKIP LOCKED` lets
+several instances run without ever handing the same job to two workers. Pushing again
+supersedes an older queued job for the same pull request, so a stale head sha is never
+reviewed.
+
+Requires `DATABASE_URL` (the queue) and `GITHUB_TOKEN` (to clone and post). Without a
+database the endpoint verifies the signature and says plainly that nothing was queued.
 
 ### Persistence
 

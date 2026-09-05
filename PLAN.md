@@ -65,7 +65,8 @@ node dist/main.js                                              # REST API on :30
 | Persistence: runs, findings, impact snapshots | done | `src/db/` |
 | GitHub: webhook signature, PR review rendering, API client | done | `src/github/` |
 | Severity gating, GitHub Action, Docker image | done | `action.yml`, `Dockerfile` |
-| Dispatching a review from a webhook delivery | **not built** | needs a queue |
+| Webhook → queue → clone → review → post | done | `src/db/job-store.service.ts`, `src/github/` |
+| Posting to a real pull request | **never exercised** | needs a live PR |
 
 `GET /api/v1/health` reports that table at runtime, so nothing has to be assumed from a doc.
 `ripplereview review <repo>` refuses with exit 2 and names the missing phase rather than
@@ -419,10 +420,10 @@ says so in bold at the top. Do not quote it.
 - [x] GitHub Action (`action.yml`), resolving the PR base ref rather than `HEAD~1`.
 - [x] Docker image, **built and run in CI** — no Docker daemon on the machine this was
       written on, so the runner is where it is actually verified.
-- [ ] **Dispatching a review from a webhook delivery.** The endpoint verifies and
-      acknowledges; nothing runs a review yet.
+- [x] **Dispatching a review from a webhook delivery.** A Postgres-backed queue, and a
+      worker that clones the pull request, reviews it and posts the result.
 
-**Why the webhook does not review inline.** A review takes seconds to minutes — a
+**Why the webhook does not review inline.** (Still true — it queues instead.) A review takes seconds to minutes — a
 repository has to be parsed and a model called — and GitHub times a delivery out after ten
 seconds and then retries it. Reviewing inline would guarantee duplicate reviews on every
 large change. The honest intermediate state is to acknowledge and log, which is what it

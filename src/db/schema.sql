@@ -64,3 +64,41 @@ CREATE TABLE IF NOT EXISTS impact_snapshots (
   -- The whole ChangeImpact, so a stored run can be re-rendered exactly as it was served.
   impact                JSONB   NOT NULL
 );
+
+-- Review jobs, queued by the GitHub webhook and drained by an in-process worker.
+--
+-- A queue rather than reviewing inline, because GitHub times a webhook delivery out after
+-- ten seconds and then retries it, and a review takes longer than that on any real
+-- repository. Reviewing inline would guarantee duplicate reviews on every large change.
+CREATE TABLE IF NOT EXISTS review_jobs (
+  id            BIGSERIAL PRIMARY KEY,
+  -- GitHub's X-GitHub-Delivery. A retried delivery carries the SAME id, which is exactly
+  -- what makes it the right idempotency key: the unique constraint turns a retry storm
+  -- into one job.
+  delivery_id   TEXT        NOT NULL UNIQUE,
+  owner         TEXT        NOT NULL,
+  repo          TEXT        NOT NULL,
+  pull_number   INTEGER     NOT NULL,
+  head_sha      TEXT        NOT NULL,
+  base_ref      TEXT        NOT NULL,
+  clone_url     TEXT        NOT NULL,
+  state         TEXT        NOT NULL DEFAULT 'pending',
+  attempts      INTEGER     NOT NULL DEFAULT 0,
+  last_error    TEXT,
+  -- Set when a newer delivery for the same pull request arrives. Reviewing a superseded
+  -- head sha spends a model call to comment on code that has already been replaced.
+  superseded_by TEXT,
+  run_id        UUID REFERENCES runs (id) ON DELETE SET NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at    TIMESTAMPTZ,
+  finished_at   TIMESTAMPTZ,
+  CONSTRAINT review_jobs_state_check
+    CHECK (state IN ('pending', 'running', 'done', 'failed', 'superseded'))
+);
+
+CREATE INDEX IF NOT EXISTS review_jobs_pending_idx
+  ON review_jobs (state, created_at)
+  WHERE state = 'pending';
+
+CREATE INDEX IF NOT EXISTS review_jobs_pull_idx
+  ON review_jobs (owner, repo, pull_number);
