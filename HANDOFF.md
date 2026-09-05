@@ -57,10 +57,12 @@ Two rules that constrain everything:
 | 1 — Graph MVP: ingest, blast radius, cycles, rules | ✅ done |
 | 2 — Context assembler, real providers, full pipeline | ✅ done |
 | 3 — Eval harness + corpus + scorecard | ✅ built, **number not produced** |
-| 4 — Persistence, GitHub integration, Action, Docker | ✅ mostly, **dispatch not built** |
+| 4 — Persistence, GitHub integration, queue, Action, Docker | ✅ done |
 | 5 — pgvector duplicate-logic detection, dashboard | ⬜ optional |
 
-**441 passing, 16 skipped locally (they need Postgres and run in CI).**
+**460 passing locally, 37 skipped (they need Postgres). In CI, where a Postgres service
+container runs, 495 pass and only 2 skip — the pair that asserts behaviour with persistence
+switched off.**
 
 ```bash
 pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test
@@ -91,11 +93,11 @@ Probe the live error shape first, as was done for the other two: both had a surp
 
 ### 2. No review has ever been posted to a real pull request
 
-The GitHub client's paths, auth header and error shapes were probed against the live API
-without creating anything (a review on a nonexistent PR answers 404; a bad token answers
-401), and the rendering is fully tested. But the posting path itself is unexercised, and a
-webhook delivery does not yet trigger a review — the endpoint verifies and acknowledges,
-and dispatching needs a queue because GitHub retries after ten seconds.
+The whole path is built and drained by a worker — verify signature, queue, clone, review,
+post — and every step is tested against a real dependency except the last. The GitHub
+client's paths, auth header and error shapes were probed against the live API without
+creating anything (a review on a nonexistent PR answers 404; a bad token answers 401), but
+`POST /pulls/:n/reviews` has never actually run.
 
 ---
 
@@ -181,6 +183,26 @@ a failing build.
 - An inline comment can only attach to a line **in the diff**, and one rejected comment
   fails the whole review request. Blast-radius findings therefore can never be inline.
 
+**git, the queue, and the checkout**
+
+- `git clone` **IGNORES `--depth` and `--filter` for a local path** — it says so in a
+  warning. A test that clones from a bare filesystem path therefore exercises neither
+  flag. Cloning over a `file://` URL applies them, which is what makes the depth assertion
+  in `pr-checkout.service.spec.ts` mean anything. Found by mutation testing: swapping
+  `--filter=blob:none` for `--depth=1` passed the whole suite.
+- Measured over `file://`: with `--depth=1`, `git merge-base HEAD FETCH_HEAD` returns
+  **nothing** — a shallow clone has no common ancestor — and the base silently falls back
+  to the target branch tip. Every commit that landed on the target since the fork then
+  reads as part of the pull request.
+- The base must be the **merge base**, not the target branch tip, for the same reason.
+- GitHub reuses its **delivery id across retries**, which is what makes it the correct
+  idempotency key. `ON CONFLICT DO NOTHING`, not a prior SELECT: two instances handling the
+  same retry would both find nothing and both insert.
+- `FOR UPDATE SKIP LOCKED` is why several workers are safe. Attempts are counted on
+  **claim**, not on failure, so a job that kills the worker still burns one; and a claim is
+  a state change rather than a lease, so `requeueStale()` runs at boot to recover rows a
+  crashed instance left `running`.
+
 **Build**
 
 - `nest build` copies **no non-TS assets** by default. `schema.sql` was missing from
@@ -243,9 +265,8 @@ The blast radius **under-reports** rather than inventing reach:
 
 Then, in rough order:
 
-- [ ] Dispatch a review from a webhook delivery — needs a queue (Bull/Redis or pg-boss),
-      because GitHub retries after ten seconds and a review takes longer.
 - [ ] Post a review to a real pull request and confirm the inline/summary split behaves.
+      Everything up to that call is tested; the call itself has never run.
 - [ ] Publish the Docker image; deploy.
 - [ ] Phase 5: pgvector duplicate-logic detection, and a dashboard reusing arch-lens's
       D3/Mermaid output.
