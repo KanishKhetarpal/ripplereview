@@ -71,8 +71,43 @@ export class ImpactRenderer {
     lines.push(...this.renderCycles(impact, paint));
     lines.push(...this.renderViolations(impact, paint));
     lines.push(...this.renderInstability(impact, paint));
+    lines.push(...this.renderDuplicates(impact, paint));
 
     return lines.join('\n');
+  }
+
+  /**
+   * Near-duplicates of the functions this change touched.
+   *
+   * Printed by the graph-only `impact` command as well as the review, because it is a
+   * measurement rather than an opinion — the same reason cycles and layer violations are
+   * printed there.
+   */
+  private renderDuplicates(
+    impact: ChangeImpact,
+    paint: (name: string, text: string) => string,
+  ): string[] {
+    if (impact.duplicates.length === 0) return [];
+
+    const lines: string[] = [paint('bold', `Duplicate logic (${impact.duplicates.length})`), ''];
+
+    for (const match of impact.duplicates) {
+      const elsewhere =
+        match.scope === 'other-repository'
+          ? ` ${paint('dim', `in ${match.duplicateOf.repo ?? 'another reviewed repository'}`)}`
+          : '';
+      lines.push(
+        `  ${paint('yellow', match.similarity.toFixed(2))}  ${paint('bold', match.name)} ` +
+          `${paint('dim', `${match.file}:${match.line}`)}`,
+      );
+      lines.push(
+        `        ${paint('dim', 'looks like')} ${match.duplicateOf.name} ` +
+          `${paint('dim', `${match.duplicateOf.file}:${match.duplicateOf.line}`)}${elsewhere}`,
+      );
+    }
+
+    lines.push('');
+    return lines;
   }
 
   private renderChangedSymbols(

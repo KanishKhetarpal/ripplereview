@@ -23,6 +23,7 @@ function impact(overrides: Partial<ChangeImpact> = {}): ChangeImpact {
     cycles: [],
     layerViolations: [],
     instabilityDeltas: [],
+    duplicates: [],
     unanalysedFiles: [],
     stats: {
       hopLimit: 3,

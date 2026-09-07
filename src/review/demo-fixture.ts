@@ -49,6 +49,7 @@ export const DEMO_IMPACT: ChangeImpact = {
   ],
   layerViolations: [],
   instabilityDeltas: [],
+  duplicates: [],
   unanalysedFiles: [],
   stats: {
     hopLimit: 3,

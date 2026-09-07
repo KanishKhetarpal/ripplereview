@@ -9,6 +9,9 @@ import { CycleDetector } from '../../src/graph/cycle-detector';
 import { GraphMetricsService } from '../../src/graph/graph-metrics';
 import { ModuleGraphBuilderService } from '../../src/graph/module-graph-builder.service';
 import { ProjectLoaderService } from '../../src/graph/project-loader.service';
+import { DuplicateDetectorService } from '../../src/duplicates/duplicate-detector.service';
+import { DuplicateStoreService } from '../../src/duplicates/duplicate-store.service';
+import { StructuralEmbedder } from '../../src/duplicates/embedding.provider';
 import { GitRepoService } from '../../src/ingest/git-repo.service';
 import { CORPUS } from './index';
 
@@ -36,6 +39,12 @@ describe('eval corpus', () => {
     new ChangedSymbolResolverService(),
     new BlastRadiusService(),
     git,
+    // A real detector with no database behind it: duplicate detection inside the
+    // repository under review needs none, and that is the configuration a CLI run uses.
+    new DuplicateDetectorService(
+      new StructuralEmbedder(),
+      new DuplicateStoreService(null, new StructuralEmbedder()),
+    ),
   );
 
   const built = new Map<string, { path: string; impact: ChangeImpact }>();

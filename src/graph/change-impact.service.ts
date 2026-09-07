@@ -9,6 +9,7 @@ import {
   LayerViolation,
   ModuleMetrics,
 } from '../core/types/change-impact';
+import { DuplicateDetectorService } from '../duplicates/duplicate-detector.service';
 import { GitRepoService } from '../ingest/git-repo.service';
 import { ChangeSet } from '../ingest/interfaces/change-set.interface';
 import { ArchitectureRule, edgeKey, findViolations, parseRules } from './architecture-rules';
@@ -53,6 +54,7 @@ export class ChangeImpactService {
     private readonly changedSymbols: ChangedSymbolResolverService,
     private readonly blastRadius: BlastRadiusService,
     private readonly git: GitRepoService,
+    private readonly duplicates: DuplicateDetectorService,
   ) {}
 
   /** Convenience for callers that only want the facts. */
@@ -83,6 +85,16 @@ export class ChangeImpactService {
     const rules = this.loadRules(repoRoot);
     const baseEdges = new Set(baseGraph.edges.map(edgeKey));
 
+    // Duplicate detection reuses the project this method already loaded. It sits here
+    // rather than in the review pipeline so that `impact` — the graph-only command, with
+    // no model involved — reports it too: it is ground truth like everything else.
+    const duplicates = await this.duplicates.detect({
+      project: loaded.project,
+      repoRoot,
+      repoId: (await this.git.originUrl(repoRoot)) ?? repoRoot,
+      changeSet,
+    });
+
     const impact: ChangeImpact = {
       repo: { root: repoRoot, baseRef: changeSet.baseRef, headRef: changeSet.headRef },
       changedFiles: changeSet.files.map((file) => file.path),
@@ -91,6 +103,7 @@ export class ChangeImpactService {
       cycles: this.compareCycles(baseGraph, headGraph),
       layerViolations: this.violations(headGraph, rules, baseEdges),
       instabilityDeltas: this.instabilityDeltas(changeSet, headMetrics, baseMetrics),
+      duplicates,
       unanalysedFiles: resolved.unparsed,
       stats: {
         hopLimit: options.maxHops,

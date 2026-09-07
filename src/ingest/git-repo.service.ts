@@ -83,6 +83,28 @@ export class GitRepoService {
   }
 
   /**
+   * A stable identity for the repository across checkouts: its origin URL.
+   *
+   * The working-tree path cannot serve. A pull request is reviewed inside a throwaway
+   * clone in a temp directory, so path identity would make every CI run look like a
+   * brand-new repository — and cross-repository duplicate detection would then report a
+   * project's own functions back to it as duplicates found "elsewhere", every time.
+   *
+   * Normalised so that the ssh and https spellings of one remote, with or without `.git`
+   * and with or without embedded credentials, come out the same. Null when there is no
+   * remote at all, which is a real state for a local-only repository.
+   */
+  async originUrl(repoPath: string): Promise<string | null> {
+    try {
+      const url = await this.client(repoPath).remote(['get-url', 'origin']);
+      const trimmed = typeof url === 'string' ? url.trim() : '';
+      return trimmed.length > 0 ? normaliseRemote(trimmed) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * A file's content at a ref, or null when it does not exist there.
    *
    * Null is a real answer, not an error: a file added on the branch has no base version,
@@ -95,4 +117,23 @@ export class GitRepoService {
       return null;
     }
   }
+}
+
+/**
+ * `git@github.com:owner/repo.git` and `https://x-token@github.com/owner/repo` both become
+ * `github.com/owner/repo`.
+ *
+ * The token case is not cosmetic: the checkout service injects a credential into the clone
+ * URL, so an un-normalised identity would write an access token into the database as part
+ * of a primary key.
+ */
+export function normaliseRemote(url: string): string {
+  return url
+    .replace(/^[a-z+]+:\/\//i, '')
+    .replace(/^ssh:\/\//i, '')
+    .replace(/^[^@/]*@/, '')
+    .replace(/:(?=\D)/, '/')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
 }

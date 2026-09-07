@@ -53,6 +53,12 @@ describe('AppModule (real container)', () => {
       process.env.DATABASE_URL ? 'implemented' : 'not-implemented',
     );
     expect(report.stages.llmAdapter).toBe('implemented');
+    // Duplicate detection needs no key and no database, so it is on everywhere. The
+    // corpus that spans repositories needs pgvector, so it is reported separately.
+    expect(report.stages.duplicateDetection).toBe('implemented');
+    expect(report.stages.crossRepositoryDuplicates).toBe(
+      process.env.DATABASE_URL ? 'implemented' : 'not-implemented',
+    );
   });
 
   it('reviews a real repository end to end, grounded in the graph', async () => {

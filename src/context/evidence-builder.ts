@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ChangeImpact, ImpactedSite } from '../core/types/change-impact';
+import { ChangeImpact, DuplicateMatch, ImpactedSite } from '../core/types/change-impact';
 import { EvidenceItem } from '../core/types/evidence';
 
 /**
@@ -20,6 +20,15 @@ const WEIGHTS = {
   existingCycle: 250,
   instabilityDelta: 200,
   typeDefinition: 400,
+  /**
+   * Duplicate logic, before the similarity bonus below.
+   *
+   * The band 685-700 that this produces sits deliberately between a direct caller (800+)
+   * and a two-hop dependant (600-650). A function that already exists somewhere is worth
+   * more than a distant transitive dependant — nobody can find it by reading — and less
+   * than something the change is about to break outright.
+   */
+  duplicateLogic: 600,
 } as const;
 
 @Injectable()
@@ -38,6 +47,7 @@ export class EvidenceBuilder {
       ...this.violationEvidence(impact),
       ...this.blastRadiusEvidence(impact),
       ...this.instabilityEvidence(impact),
+      ...this.duplicateEvidence(impact),
     ];
 
     return items
@@ -120,6 +130,42 @@ export class EvidenceBuilder {
         location: { file: delta.module },
       }));
   }
+
+  /**
+   * Functions the change touched whose logic already exists somewhere else.
+   *
+   * The one evidence kind the dependency graph structurally cannot produce: two identical
+   * functions in unrelated modules share no edge, so no amount of graph walking reaches
+   * one from the other.
+   *
+   * The similarity is stated rather than converted to a word. "0.92 similar" tells a
+   * reader how much to trust it; "duplicated" asserts a judgement the tool has not made —
+   * the two copies may have diverged deliberately.
+   */
+  private duplicateEvidence(impact: ChangeImpact): Omit<EvidenceItem, 'id'>[] {
+    return impact.duplicates.map((match) => ({
+      kind: 'duplicate' as const,
+      summary: describeDuplicate(match),
+      // A closer match outranks a looser one, so when the budget is tight the item that
+      // survives is the one most likely to be a real copy rather than a coincidence.
+      weight: WEIGHTS.duplicateLogic + Math.round(match.similarity * 100),
+      location: { file: match.file, line: match.line },
+    }));
+  }
+}
+
+/** One line, in the same shape as every other evidence summary. */
+function describeDuplicate(match: DuplicateMatch): string {
+  const where =
+    match.scope === 'other-repository'
+      ? `${match.duplicateOf.file}:${match.duplicateOf.line} in ${match.duplicateOf.repo ?? 'another reviewed repository'}`
+      : `${match.duplicateOf.file}:${match.duplicateOf.line}`;
+
+  return (
+    `${match.name} at ${match.file}:${match.line} is ${match.similarity.toFixed(2)} similar to ` +
+    `the existing ${match.duplicateOf.name} at ${where} ` +
+    '(structural comparison: local names and literal values are abstracted, calls are not)'
+  );
 }
 
 /**

@@ -2,6 +2,7 @@ import { Controller, Get } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { JobStoreService } from '../db/job-store.service';
 import { RunStoreService } from '../db/run-store.service';
+import { DuplicateStoreService } from '../duplicates/duplicate-store.service';
 import { GitHubClient } from '../github/github-client';
 import { LlmService } from '../llm/llm.service';
 
@@ -22,6 +23,7 @@ export class HealthController {
     private readonly runs: RunStoreService,
     private readonly github: GitHubClient,
     private readonly jobs: JobStoreService,
+    private readonly duplicates: DuplicateStoreService,
   ) {}
 
   @Get()
@@ -34,6 +36,11 @@ export class HealthController {
       stages: {
         ingest: 'implemented',
         graph: 'implemented',
+        // Always on: it needs neither a key nor a database. What the database adds is the
+        // corpus, so the two are reported apart — a single "implemented" here would claim
+        // cross-repository matching on an installation that cannot do it.
+        duplicateDetection: 'implemented',
+        crossRepositoryDuplicates: this.duplicates.available ? 'implemented' : 'not-implemented',
         contextAssembler: 'implemented',
         llmAdapter: 'implemented',
         findingParser: 'implemented',

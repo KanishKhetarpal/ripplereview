@@ -12,6 +12,7 @@ export const CATEGORIES = [
   'cross-module-regression',
   'architecture',
   'circular-dependency',
+  'duplicate-logic',
   'security',
   'performance',
   'maintainability',
@@ -48,6 +49,10 @@ export const STRUCTURAL_CATEGORIES: readonly Category[] = [
   'cross-module-regression',
   'architecture',
   'circular-dependency',
+  // "This already exists at foo.ts:42" is a claim about the repository, not about the
+  // diff, and it is the easiest of all of them to hallucinate plausibly: a file path and
+  // a line number always look like a fact. The detector supplies real ones as evidence.
+  'duplicate-logic',
 ];
 
 export const SEVERITY_ORDER: Record<Severity, number> = {

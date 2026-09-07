@@ -11,7 +11,8 @@ export type EvidenceKind =
   | 'type-definition'
   | 'cycle'
   | 'layer-violation'
-  | 'instability';
+  | 'instability'
+  | 'duplicate';
 
 export interface EvidenceLocation {
   /** Repo-relative POSIX path. */

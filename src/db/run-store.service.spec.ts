@@ -47,6 +47,7 @@ function impact(): ChangeImpact {
     cycles: [{ nodeIds: ['src/a.ts', 'src/b.ts'], introducedByChange: true }],
     layerViolations: [],
     instabilityDeltas: [],
+    duplicates: [],
     unanalysedFiles: [],
     stats: {
       hopLimit: 3,

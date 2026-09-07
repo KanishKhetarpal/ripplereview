@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { DuplicatesModule } from '../duplicates/duplicates.module';
 import { IngestModule } from '../ingest/ingest.module';
 import { BlastRadiusService } from './blast-radius.service';
 import { ChangeImpactService } from './change-impact.service';
@@ -9,7 +10,7 @@ import { ModuleGraphBuilderService } from './module-graph-builder.service';
 import { ProjectLoaderService } from './project-loader.service';
 
 @Module({
-  imports: [IngestModule],
+  imports: [IngestModule, DuplicatesModule],
   providers: [
     ProjectLoaderService,
     ModuleGraphBuilderService,

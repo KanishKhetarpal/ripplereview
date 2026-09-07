@@ -71,6 +71,35 @@ export interface InstabilityDelta {
   after: ModuleMetrics;
 }
 
+/** Where the duplicated code lives. */
+export type DuplicateScope = 'repository' | 'other-repository';
+
+/**
+ * A changed function whose logic already exists somewhere else.
+ *
+ * Ground truth like everything else in this file: the match is a measured similarity
+ * between two normalised token streams, not a model's opinion that two things look alike.
+ * The reviewer may argue about whether the duplication matters; it may not invent one.
+ */
+export interface DuplicateMatch {
+  /** The changed function, as `file#Name@line`. */
+  unitId: string;
+  name: string;
+  file: string;
+  line: number;
+  /** The existing function it duplicates. */
+  duplicateOf: {
+    name: string;
+    file: string;
+    line: number;
+    /** Set only for a cross-repository match, where the file path alone is ambiguous. */
+    repo?: string;
+  };
+  /** Cosine similarity in [0, 1]. 1.0 means the two bodies normalise identically. */
+  similarity: number;
+  scope: DuplicateScope;
+}
+
 export interface ImpactStats {
   hopLimit: number;
   /** First reference lookup, which pays the language service's one-time warm-up. */
@@ -99,6 +128,14 @@ export interface ChangeImpact {
   cycles: CycleImpact[];
   layerViolations: LayerViolation[];
   instabilityDeltas: InstabilityDelta[];
+  /**
+   * Changed functions whose logic already exists elsewhere.
+   *
+   * Empty when the detector found nothing, and empty on a diff-only run. It is a required
+   * field rather than an optional one so that a caller which forgets to populate it fails
+   * to compile — an optional evidence source is one that silently stops being produced.
+   */
+  duplicates: DuplicateMatch[];
   /**
    * Source files the change touched that the parsed project did not contain — excluded by
    * the repository's tsconfig, or outside its include globs.

@@ -187,6 +187,7 @@ describe('ReviewCommentBuilder', () => {
               },
             ],
             instabilityDeltas: [],
+            duplicates: [],
             unanalysedFiles: [],
             stats: {
               hopLimit: 3,

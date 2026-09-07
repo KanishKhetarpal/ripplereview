@@ -1,6 +1,9 @@
 import { rmSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ChangeImpact } from '../core/types/change-impact';
+import { DuplicateDetectorService } from '../duplicates/duplicate-detector.service';
+import { DuplicateStoreService } from '../duplicates/duplicate-store.service';
+import { StructuralEmbedder } from '../duplicates/embedding.provider';
 import { GitRepoService } from '../ingest/git-repo.service';
 import { BlastRadiusService } from './blast-radius.service';
 import { ChangeImpactService } from './change-impact.service';
@@ -34,6 +37,12 @@ describe('ChangeImpactService (real repository)', () => {
     new ChangedSymbolResolverService(),
     new BlastRadiusService(),
     git,
+    // A real detector with no database behind it: duplicate detection inside the
+    // repository under review needs none, and that is the configuration a CLI run uses.
+    new DuplicateDetectorService(
+      new StructuralEmbedder(),
+      new DuplicateStoreService(null, new StructuralEmbedder()),
+    ),
   );
 
   beforeAll(async () => {

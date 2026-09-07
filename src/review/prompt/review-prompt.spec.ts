@@ -72,6 +72,7 @@ const IMPACT: ChangeImpact = {
       after: { fanIn: 1, fanOut: 1, instability: 0.5 },
     },
   ],
+  duplicates: [],
   unanalysedFiles: [],
   stats: {
     hopLimit: 3,

@@ -26,7 +26,12 @@ jobs:
     # that the SQL matches the SQL that was written.
     services:
       postgres:
-        image: postgres:16-alpine
+        # pgvector rather than plain postgres:16-alpine, because the duplicate-detection
+        # store needs the extension and there is no point testing a code path against a
+        # database that cannot run it. Same PostgreSQL 16 underneath, so nothing else
+        # changes. The degradation path — no extension available — is covered separately,
+        # against a connection that refuses CREATE EXTENSION.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: ripple
           POSTGRES_PASSWORD: ripple

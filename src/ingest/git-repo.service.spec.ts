@@ -3,7 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { GitRepoService, NotAGitRepositoryError, UnknownRefError } from './git-repo.service';
+import {
+  normaliseRemote,
+  GitRepoService,
+  NotAGitRepositoryError,
+  UnknownRefError,
+} from './git-repo.service';
 
 /**
  * Runs against a real repository built by real git commands.
@@ -135,5 +140,37 @@ describe('GitRepoService (real repository)', () => {
 
   it('answers null rather than throwing for a nonexistent ref', async () => {
     await expect(service.fileAtRef(repo, 'nope', 'src/pricing.ts')).resolves.toBeNull();
+  });
+
+  it('answers null for a repository with no origin remote', async () => {
+    // A local-only repository is a real state of the world, not a fault. The fixture has
+    // never had a remote added.
+    await expect(service.originUrl(repo)).resolves.toBeNull();
+  });
+});
+
+/**
+ * Repository identity, used as a database key for cross-repository duplicate detection.
+ *
+ * A pull request is reviewed inside a throwaway clone in a temp directory, so the working
+ * path cannot identify a repository: every CI run would look like a brand-new one and a
+ * project's own functions would come back as duplicates found "elsewhere".
+ */
+describe('normaliseRemote', () => {
+  it('reduces the ssh and https spellings of one remote to the same string', () => {
+    expect(normaliseRemote('git@github.com:Owner/Repo.git')).toBe('github.com/owner/repo');
+    expect(normaliseRemote('https://github.com/Owner/Repo.git')).toBe('github.com/owner/repo');
+    expect(normaliseRemote('https://github.com/Owner/Repo/')).toBe('github.com/owner/repo');
+    expect(normaliseRemote('ssh://git@github.com/Owner/Repo')).toBe('github.com/owner/repo');
+  });
+
+  it('strips embedded credentials', () => {
+    // Not cosmetic. The checkout service injects an access token into the clone URL, so
+    // an un-normalised identity would write that token into the database as part of a
+    // primary key — and then into any log line that names the repository.
+    const identity = normaliseRemote('https://x-access-token:ghs_SECRET@github.com/Owner/Repo.git');
+
+    expect(identity).toBe('github.com/owner/repo');
+    expect(identity).not.toContain('ghs_SECRET');
   });
 });
