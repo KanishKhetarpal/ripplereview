@@ -58,11 +58,11 @@ Two rules that constrain everything:
 | 2 — Context assembler, real providers, full pipeline | ✅ done |
 | 3 — Eval harness + corpus + scorecard | ✅ built, **number not produced** |
 | 4 — Persistence, GitHub integration, queue, Action, Docker | ✅ done |
-| 5 — pgvector duplicate-logic detection, dashboard | ⬜ optional |
+| 5 — Duplicate-logic detection, pgvector corpus, dashboard | ✅ done |
 
-**460 passing locally, 37 skipped (they need Postgres). In CI, where a Postgres service
-container runs, 495 pass and only 2 skip — the pair that asserts behaviour with persistence
-switched off.**
+**512 passing locally, 44 skipped (they need Postgres). In CI, where a pgvector service
+container runs, the skipped ones run instead — bar the handful that assert behaviour with
+persistence switched OFF, which skip there.**
 
 ```bash
 pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test
@@ -117,6 +117,8 @@ ingest → graph engine → context assembler → LLM → grounding guard → ou
 | `src/llm/` | provider interface, echo stub, OpenAI, Gemini, parser + repair loop |
 | `src/review/` | pipeline orchestration, prompt, severity gate, HTTP surface |
 | `src/db/` | optional PostgreSQL persistence |
+| `src/duplicates/` | function fingerprints, similarity search, pgvector corpus |
+| `src/dashboard/` | server-rendered run history and blast-radius SVG |
 | `src/github/` | webhook signature, PR review rendering, API client |
 | `src/output/` | terminal + JSON renderers |
 | `eval/` | corpus, matcher, metrics, runner, scorecard |
@@ -203,6 +205,38 @@ a failing build.
   a state change rather than a lease, so `requeueStale()` runs at boot to recover rows a
   crashed instance left `running`.
 
+**Duplicate detection**
+
+- The plan said "a graph cannot catch this; embeddings can". Half of that is right. A
+  deterministic structural fingerprint separates clones from unrelated code by an enormous
+  margin with no model at all: across two repositories, unrelated pairs sit at a median
+  cosine of **0.05** and a p95 of 0.30–0.38, a renamed copy at **1.00**, and a copy with a
+  statement changed at **0.92–0.96**. 0.85 is the empty space between the two populations.
+- Run over a 4,000-file production codebase, the top of the ranking was real copy-paste
+  every time — one helper duplicated across four services, another across two, a pair of
+  event handlers that are the same function twice. On this repository's own source it found
+  four hand-copied `ChangeImpact` fixture builders.
+- **Keeping called method names in the token stream is what makes it precise.** Measured on
+  the fixture: two functions with an identical skeleton calling different methods score
+  **0.018**. With call names abstracted they would be near-identical. The cost is real —
+  renaming a local that is itself *called* moves the fingerprint, so recall on a synthetic
+  rename-everything clone is 74–92% rather than ~100%.
+- Shingle width **k=5** and **256** dimensions, both measured. k=3 lets unrelated pairs run
+  hot (median 0.20); k=7 separates best but is the most brittle to an edit. 512 dimensions
+  are indistinguishable from 256 on separation, so the smaller wins.
+- **A function matches a closure nested inside it at ~0.94**, because one body is literally
+  part of the other. Excluded by line-range overlap. This was found in probe output, not in
+  production.
+- Brute force is fine at repository scale: **100 queries against 1,235 vectors in 61ms**. No
+  ANN index, which would trade exactness on a claim that is supposed to be exact.
+- `CREATE EXTENSION vector` must NOT go in `schema.sql`. That file is applied on every boot
+  in one transaction, so a missing extension would stop the application from starting rather
+  than merely disabling a feature. It is applied separately and its failure is caught.
+- Repository identity must be the **origin URL**, not the path: a pull request is reviewed
+  in a throwaway clone, so path identity makes every CI run a new repository and hands a
+  project its own functions back as cross-repository duplicates. Strip credentials from it —
+  the checkout injects a token into the clone URL, which would otherwise become a primary key.
+
 **Build**
 
 - `nest build` copies **no non-TS assets** by default. `schema.sql` was missing from
@@ -267,6 +301,12 @@ Then, in rough order:
 
 - [ ] Post a review to a real pull request and confirm the inline/summary split behaves.
       Everything up to that call is tested; the call itself has never run.
+- [ ] Run cross-repository duplicate detection against two real repositories. The store is
+      tested against a real pgvector, but only with synthetic fingerprints.
+- [ ] Decide what to do about duplicated test fixtures. The detector reports them, they are
+      real, and on a repository with much duplicated test setup they can fill the ten
+      reported matches on their own. A path exclusion is the obvious answer and is also a
+      policy the tool should probably not hard-code.
 - [ ] Publish the Docker image; deploy.
-- [ ] Phase 5: pgvector duplicate-logic detection, and a dashboard reusing arch-lens's
-      D3/Mermaid output.
+- [ ] Extend the corpus with a duplicate-logic case, so the eval measures whether the new
+      evidence kind actually helps rather than only that it fires.

@@ -200,6 +200,7 @@ Evidence is ranked, then packed in rank order until the budget is gone:
 | highest | a cycle **this change introduced** |
 | | an architecture rule **this change broke** |
 | | impacted call sites, nearest first, ties broken by module fan-in |
+| | duplicate logic the change re-implements, closest match first |
 | | type and interface definitions the changed code refers to |
 | | pre-existing cycles and violations |
 | lowest | instability shifts |
@@ -207,6 +208,67 @@ Evidence is ranked, then packed in rank order until the budget is gone:
 Anything that does not fit is listed in `budget.droppedItemIds` **and** declared in the
 prompt, so the model is told the blast radius it is seeing is a lower bound rather than
 inferring that nothing else exists.
+
+## Duplicate logic
+
+The one class of defect a dependency graph structurally cannot reach. Two identical
+functions in unrelated modules share no edge, so no amount of walking gets from one to the
+other — the reviewer needs a different instrument to say "you already wrote this".
+
+Each function the change touches is normalised to a token stream: local names and literal
+values abstracted, called methods and property names kept. That stream is hashed into a
+256-wide unit vector, and anything above 0.85 cosine similarity is reported as evidence.
+A copy-paste with every variable renamed lands at 1.00; a copy with a statement changed at
+0.92–0.96.
+
+**It is deterministic, and does not use an embedding model.** That is a measured choice,
+not a limitation of the budget:
+
+- **It works.** Run over a 4,000-file production codebase, the top of the ranking was real
+  copy-paste every time — one helper duplicated across four services, another across two,
+  a pair of event handlers that are the same function with a different name.
+- **It is reproducible**, which a structural claim has to be. This project's first rule is
+  that the graph asserts structure and the model does not; sourcing "this duplicates that"
+  from an embedding vendor would make the one class of claim the reviewer may never invent
+  depend on a model after all, and on a version of it that can change underneath you.
+- **It runs everywhere** — no key, no network, no database. A laptop with no configuration
+  gets the same answer as CI.
+
+What it gives up is real: it matches *structure*, so two functions that compute the same
+thing by genuinely different means do not match. `Embedder` in
+`src/duplicates/embedding.provider.ts` is the seam a neural embedder plugs into, and it is
+the only thing that would have to change.
+
+`duplicate-logic` is a **structural** finding category, so the grounding guard requires a
+citation for it. "This already exists at `foo.ts:42`" is the easiest claim in the system to
+hallucinate plausibly: a path and a line number always look like a fact.
+
+### Across repositories
+
+With `DATABASE_URL` set and pgvector available, every reviewed repository's fingerprints
+are kept, and a change is also compared against repositories that are **not checked out** —
+the question local analysis cannot answer. Repository identity is the git origin URL with
+credentials stripped, because a pull request is reviewed inside a throwaway clone and path
+identity would hand a project its own functions back as duplicates found elsewhere.
+
+That schema is applied separately from `schema.sql`, and its failure is caught. `CREATE
+EXTENSION vector` is often not the application's to run on a managed database, and putting
+it in the migration that runs on every boot would turn "cross-repository matching is off"
+into "the application does not start". Without it, everything still works within the
+repository under review.
+
+## Dashboard
+
+`GET /api/v1/dashboard` lists stored runs; each one has a page with the blast radius drawn
+as a diagram, the findings and the evidence each cites, whatever the grounding guard
+dropped, and any duplicate logic.
+
+Server-rendered HTML, no client-side JavaScript, nothing fetched from a CDN — it works
+offline and inside a private network. The diagram is laid out by hop distance, and an arrow
+means "reaches, at this distance": the impact model records the origin and the distance,
+never the symbols in between, so past one hop the line is dashed and the page says so.
+
+It needs `DATABASE_URL`; without one it says so rather than showing an empty table.
 
 ## Known limits
 
@@ -238,6 +300,19 @@ Honest about direction: the blast radius **under-reports** rather than inventing
   another ref would resolve the diff's line numbers against different code; that is refused
   rather than silently wrong.
 - A first reference lookup on a large repository (~700 files) costs ~18s and ~3GB of heap.
+- Duplicate detection matches **structure**. Two functions computing the same thing by
+  different means do not match, and renaming a local that is itself *called* moves the
+  fingerprint — measured recall on a synthetic rename-everything clone is 74–92% depending
+  on the repository, against ~100% for a realistic copy-paste that keeps its library calls.
+- Duplicate detection ignores functions under 40 normalised tokens, roughly eight lines.
+  Below that every accessor in a codebase is identical to every other one.
+- **It does not know which duplicates are deliberate.** Test fixtures, generated code and
+  intentionally parallel implementations all match, and on a repository with much
+  duplicated test setup the ten reported matches can be filled entirely by it. The prompt
+  asks the model to judge whether consolidating would be an improvement; the detector does
+  not, and there is no path-based exclusion.
+- **Cross-repository duplicate detection has never run against two real repositories.** The
+  store is tested against a real pgvector, but only with synthetic fingerprints.
 
 ## Producing the number
 

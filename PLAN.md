@@ -453,11 +453,28 @@ a nonexistent PR answers 404, a bad token answers 401), but no review has ever b
 Doing so would publish content to a public repository, which is the author's call rather
 than a build step.
 
-### Phase 5 — Optional stretch
+### Phase 5 — Optional stretch — DONE
 
-- [ ] pgvector duplicate-logic detection: embed functions, flag near-duplicate logic the
-      change reintroduces. A graph cannot catch this; embeddings can.
-- [ ] Web dashboard with blast-radius visualisation, reusing Arch Lens's D3/Mermaid output.
+- [x] Duplicate-logic detection: flag logic a change re-implements. A graph cannot catch
+      this — two identical functions in unrelated modules share no edge.
+
+      **The premise changed after probing it.** The bullet said "embeddings can", and they
+      would; but a deterministic structural fingerprint also does, and it measured better
+      on the grounds that matter. Across two repositories, unrelated pairs sit at a median
+      cosine of 0.05 while a renamed copy sits at 1.00 — and on a 4,000-file production
+      codebase the top of the ranking was real copy-paste every time. It is also
+      reproducible, which a structural claim has to be: sourcing this from a vendor's model
+      would break rule one of the project. `Embedder` is the seam a neural embedder plugs
+      into; nothing else would change.
+
+- [x] pgvector, for the question local analysis cannot answer: does this logic already
+      exist in a repository that is not checked out. Applied separately from `schema.sql`
+      and its failure caught, because `CREATE EXTENSION` in the boot migration would turn
+      "cross-repository matching is off" into "the application does not start".
+
+- [x] Web dashboard with blast-radius visualisation. Server-rendered HTML and inline SVG
+      rather than Arch Lens's D3 output: no bundler, no CDN, works offline, and the markup
+      can be asserted directly instead of after executing a bundle in a browser.
 
 ---
 
