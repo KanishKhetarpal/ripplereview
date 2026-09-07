@@ -29,6 +29,7 @@ async function bootstrap(): Promise<void> {
   await app.listen(config.port);
 
   Logger.log(`RippleReview API listening on http://localhost:${config.port}/api/v1`, 'Bootstrap');
+  Logger.log(`Dashboard at http://localhost:${config.port}/api/v1/dashboard`, 'Bootstrap');
 }
 
 void bootstrap();
