@@ -66,7 +66,13 @@ export class DuplicateDetectorService {
     const units = extractUnits(options.project, options.repoRoot);
     const touched = units.filter((unit) => isTouched(unit, options.changeSet));
 
-    if (touched.length === 0 || units.length < 2) return [];
+    // Only "the change touched nothing". NOT "there is only one function here": that was
+    // right when the sole search was in-memory, where a lone function has nothing to
+    // compare against, and became wrong the moment a corpus existed. A single-function
+    // repository can both match something in another repository and contribute to it, and
+    // the guard silently skipped both. `units.length === 0` still returns here, because
+    // touched is a subset of units.
+    if (touched.length === 0) return [];
 
     const vectors = await this.embedder.embed(units);
     const index = new VectorIndex(units.map((unit, i) => ({ unit, vector: vectors[i] })));

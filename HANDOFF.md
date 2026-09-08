@@ -60,7 +60,7 @@ Two rules that constrain everything:
 | 4 — Persistence, GitHub integration, queue, Action, Docker | ✅ done |
 | 5 — Duplicate-logic detection, pgvector corpus, dashboard | ✅ done |
 
-**512 passing locally, 44 skipped (they need Postgres). In CI, where a pgvector service
+**524 passing locally, 50 skipped (they need Postgres). In CI, where a pgvector service
 container runs, the skipped ones run instead — bar the handful that assert behaviour with
 persistence switched OFF, which skip there.**
 
@@ -232,6 +232,12 @@ a failing build.
 - `CREATE EXTENSION vector` must NOT go in `schema.sql`. That file is applied on every boot
   in one transaction, so a missing extension would stop the application from starting rather
   than merely disabling a feature. It is applied separately and its failure is caught.
+- **`units.length < 2` was a real bug once a corpus existed.** The detector returned early
+  when a repository held fewer than two comparable functions — correct while the only
+  search was in-memory, wrong the moment other repositories were reachable: a
+  single-function service could neither be told it had copied something nor contribute
+  anything for the next repository. Found by writing the cross-repository test, not by
+  reading the code. Now only "the change touched nothing" returns early.
 - Repository identity must be the **origin URL**, not the path: a pull request is reviewed
   in a throwaway clone, so path identity makes every CI run a new repository and hands a
   project its own functions back as cross-repository duplicates. Strip credentials from it —
@@ -253,13 +259,14 @@ a failing build.
 
 ## The eval harness
 
-Five corpus cases, each a real two-commit git repository built programmatically:
+Six corpus cases, each a real two-commit git repository built programmatically:
 
 | Case | Defect | Purpose |
 |---|---|---|
 | `signature-drift` | caller two modules away never updated, compiles fine | headline claim |
 | `new-cycle` | new import closes a cycle | headline claim |
 | `layering-breach` | domain imports infrastructure against a declared rule | headline claim |
+| `duplicate-logic` | new helper re-implements one the diff never mentions | headline claim |
 | `local-bug` | off-by-one fully visible in the diff | **control** — graph should NOT help |
 | `clean-refactor` | nothing wrong at all | **control** — does context invent findings? |
 
@@ -286,7 +293,7 @@ The blast radius **under-reports** rather than inventing reach:
   `unanalysedFiles`.
 - DI by string token and computed `import()` are invisible to a static graph.
 - Gemini token counts are estimated with OpenAI's tokenizer.
-- The corpus is five small purpose-built repos — enough to detect a large effect, not a
+- The corpus is six small purpose-built repos — enough to detect a large effect, not a
   small one. Scaling to mutations of a real OSS repo is the obvious next step.
 - Ranking weights in `evidence-builder.ts` are reasoned, not tuned against measured
   catch-rate. The Phase 3 number is what would justify them.
@@ -301,12 +308,10 @@ Then, in rough order:
 
 - [ ] Post a review to a real pull request and confirm the inline/summary split behaves.
       Everything up to that call is tested; the call itself has never run.
-- [ ] Run cross-repository duplicate detection against two real repositories. The store is
-      tested against a real pgvector, but only with synthetic fingerprints.
 - [ ] Decide what to do about duplicated test fixtures. The detector reports them, they are
       real, and on a repository with much duplicated test setup they can fill the ten
       reported matches on their own. A path exclusion is the obvious answer and is also a
       policy the tool should probably not hard-code.
 - [ ] Publish the Docker image; deploy.
-- [ ] Extend the corpus with a duplicate-logic case, so the eval measures whether the new
-      evidence kind actually helps rather than only that it fires.
+- [ ] Scale the corpus beyond six purpose-built repositories — mutations of a real OSS
+      repository is the obvious next step.

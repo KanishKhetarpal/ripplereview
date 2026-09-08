@@ -12,7 +12,7 @@ graph and hands the model **cited evidence** alongside the diff. Same model, bet
 
 > **Status: Phase 4 — integration built, eval number not yet produced.** The pipeline runs end to
 > end and the eval harness scores graph-grounded review against a diff-only baseline on a
-> five-case defect corpus. What is missing is a model: there is no API key on the machine
+> six-case defect corpus. What is missing is a model: there is no API key on the machine
 > this was built on, so **no live model call has ever been made** and the scorecard has only
 > ever run against the offline `echo` stub. One command produces the real number — see
 > [Producing the number](#producing-the-number).
@@ -286,7 +286,7 @@ Honest about direction: the blast radius **under-reports** rather than inventing
   verifies, enqueues and returns; a worker clones the pull request, reviews it and posts.
   The queue, the checkout and the rendering are all tested against real dependencies — the
   final `POST /pulls/:n/reviews` is not.
-- The corpus is **five small purpose-built repositories**. It is enough to detect a large
+- The corpus is **six small purpose-built repositories**. It is enough to detect a large
   effect and not enough to measure a small one; scaling it to mutations of a real OSS
   repository is the obvious next step.
 - A module-scope change (an edited import) has no declaration to look references up from, so
@@ -311,8 +311,8 @@ Honest about direction: the blast radius **under-reports** rather than inventing
   duplicated test setup the ten reported matches can be filled entirely by it. The prompt
   asks the model to judge whether consolidating would be an improvement; the detector does
   not, and there is no path-based exclusion.
-- **Cross-repository duplicate detection has never run against two real repositories.** The
-  store is tested against a real pgvector, but only with synthetic fingerprints.
+- Duplicate detection has no equivalent of `unanalysedFiles`: a repository whose tsconfig
+  excludes a file will not compare against the functions in it, and says nothing about it.
 
 ## Producing the number
 
@@ -326,11 +326,12 @@ pnpm eval --runs 5
 ```
 
 That writes `eval/out/scorecard.md`, `scorecard.json` and `catch-rate.svg`. Roughly
-`5 cases x 2 arms x runs` model calls; at 5 runs that is 50 calls of about 5–7k prompt
+`6 cases x 2 arms x runs` model calls; at 5 runs that is 60 calls of about 5–7k prompt
 tokens each.
 
-**The corpus is built to be able to disprove the thesis.** Three cases carry defects only
-the graph can surface. Two are controls: `local-bug` is a defect fully visible in the diff,
+**The corpus is built to be able to disprove the thesis.** Four cases carry defects only
+the analysis can surface — a caller two modules away, an introduced cycle, a layering
+breach, and logic re-implemented from a file the diff never mentions. Two are controls: `local-bug` is a defect fully visible in the diff,
 where graph context should make no difference — if it helps there too, the effect is "more
 context", not "better context". `clean-refactor` has no defect at all, and measures whether
 the extra context provokes invented findings.
