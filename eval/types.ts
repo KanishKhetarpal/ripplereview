@@ -9,7 +9,7 @@ import { Category, Finding } from '../src/core/types/finding';
  * as the control: if graph context helps there too, the effect is "more context" rather
  * than "better context", which is a weaker claim than the one being made.
  */
-export type DefectKind = 'cross-module' | 'cycle' | 'architecture' | 'local';
+export type DefectKind = 'cross-module' | 'cycle' | 'architecture' | 'duplicate' | 'local';
 
 export interface KnownDefect {
   id: string;

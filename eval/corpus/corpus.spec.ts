@@ -13,7 +13,8 @@ import { DuplicateDetectorService } from '../../src/duplicates/duplicate-detecto
 import { DuplicateStoreService } from '../../src/duplicates/duplicate-store.service';
 import { StructuralEmbedder } from '../../src/duplicates/embedding.provider';
 import { GitRepoService } from '../../src/ingest/git-repo.service';
-import { CORPUS } from './index';
+import { CROSS_MODULE_KINDS } from '../metrics';
+import { CORPUS, caseByName } from './index';
 
 /**
  * Validates the corpus itself, before any of it is used to score a model.
@@ -155,6 +156,43 @@ describe('eval corpus', () => {
       expect(impact.layerViolations).toEqual([]);
     });
 
+    it('duplicate-logic: the detector surfaces the copy, at full similarity', () => {
+      const { impact } = built.get('duplicate-logic')!;
+
+      expect(impact.duplicates).toHaveLength(1);
+      const [match] = impact.duplicates;
+      expect(match.name).toBe('calculateRefundShare');
+      expect(match.file).toBe('src/subscriptions/refund.ts');
+      expect(match.duplicateOf.name).toBe('prorateCharge');
+      expect(match.duplicateOf.file).toBe('src/billing/proration.ts');
+      expect(match.similarity).toBe(1);
+    });
+
+    it('duplicate-logic: the diff really does not mention the function being duplicated', () => {
+      // The case only measures anything if the baseline is genuinely blind. If the
+      // original were in the diff, a diff-only reviewer could spot the duplication too and
+      // a win here would be unattributable.
+      const { impact } = built.get('duplicate-logic')!;
+      expect(impact.changedFiles).not.toContain('src/billing/proration.ts');
+    });
+
+    it('duplicate-logic: no OTHER structural evidence is offered', () => {
+      // Otherwise a win on this case could be credited to a cycle or a layering breach
+      // rather than to the duplicate evidence it exists to test.
+      const { impact } = built.get('duplicate-logic')!;
+      expect(impact.cycles).toEqual([]);
+      expect(impact.layerViolations).toEqual([]);
+    });
+
+    it('duplicate-logic: the decoy function is outside the tolerance window', () => {
+      // The file holds a second, innocuous new function. Without it the tolerance would
+      // credit a finding anywhere in a one-function file, which is the matcher rule this
+      // corpus is supposed to respect rather than route around.
+      const defect = caseByName('duplicate-logic')!.defects[0];
+      const decoyLine = 21;
+      expect(Math.abs(decoyLine - defect.line)).toBeGreaterThan(defect.lineTolerance);
+    });
+
     it('clean-refactor: no cycle and no violation is introduced', () => {
       const { impact } = built.get('clean-refactor')!;
       expect(impact.cycles.filter((c) => c.introducedByChange)).toEqual([]);
@@ -175,6 +213,15 @@ describe('eval corpus', () => {
 
     it('carries a case with no defect at all, to measure invented findings', () => {
       expect(CORPUS.some((c) => c.defects.length === 0)).toBe(true);
+    });
+
+    it('has a case for every kind the headline metric counts', () => {
+      // The cross-module catch-rate is the headline number, and a kind listed in it with
+      // no case in the corpus contributes nothing while looking like coverage.
+      const kinds = new Set(CORPUS.flatMap((entry) => entry.defects).map((d) => d.kind));
+      for (const kind of CROSS_MODULE_KINDS) {
+        expect([...kinds]).toContain(kind);
+      }
     });
 
     it('gives every defect a unique id, since ids are how hits are counted', () => {

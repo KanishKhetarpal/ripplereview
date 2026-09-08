@@ -5,7 +5,7 @@ import { buildRepo } from './build-repo';
 /**
  * The defect corpus.
  *
- * Five cases, chosen so the result can be wrong in both directions. Three carry defects a
+ * Six cases, chosen so the result can be wrong in both directions. Four carry defects a
  * diff-only reviewer is structurally blind to. One carries a defect visible in the diff
  * alone — the control, where graph context should make no difference; if it helps there
  * too, the effect is "more context" rather than "better context". One carries no defect at
@@ -351,12 +351,119 @@ export function fmt(value: number): string {
     }),
 };
 
+// ---------------------------------------------------------------------------------------
+// 6. Duplicate logic: a new helper that re-implements one already in the repository.
+// ---------------------------------------------------------------------------------------
+
+const duplicateLogic: CorpusCase = {
+  name: 'duplicate-logic',
+  summary:
+    'A refund helper is added to the subscriptions module. It is the proration helper ' +
+    'from the billing module rewritten with different names — same guard, same clamp, ' +
+    'same rounding. The original is never mentioned in the diff, so a reviewer reading ' +
+    'the change alone has no way to know it already exists.',
+  defects: [
+    {
+      id: 'refund-duplicates-proration',
+      kind: 'duplicate',
+      file: 'src/subscriptions/refund.ts',
+      line: 1,
+      lineTolerance: 12,
+      acceptCategories: ['duplicate-logic', 'maintainability'],
+      description:
+        'calculateRefundShare re-implements prorateCharge exactly. A fix to the rounding ' +
+        'or the clamp in one will not reach the other.',
+    },
+  ],
+  build: () =>
+    buildRepo({
+      base: {
+        'src/billing/proration.ts': `export function prorateCharge(
+  amount: number,
+  daysUsed: number,
+  daysInPeriod: number,
+): number {
+  if (daysInPeriod <= 0) {
+    return 0;
+  }
+
+  const capped = Math.min(Math.max(daysUsed, 0), daysInPeriod);
+  const ratio = capped / daysInPeriod;
+  const raw = amount * ratio;
+  const rounded = Math.round(raw * 100) / 100;
+
+  return Math.max(rounded, 0);
+}
+`,
+        'src/billing/invoice.ts': `import { prorateCharge } from './proration';
+
+export function invoiceLine(amount: number, daysUsed: number, daysInPeriod: number): string {
+  return 'due: ' + prorateCharge(amount, daysUsed, daysInPeriod).toFixed(2);
+}
+`,
+        'src/subscriptions/plan.ts': `export interface Plan {
+  name: string;
+  monthlyPrice: number;
+}
+
+export function describePlan(plan: Plan): string {
+  return plan.name + ' at ' + plan.monthlyPrice;
+}
+`,
+      },
+      head: {
+        // The whole change: one new file, plus a caller for it. `proration.ts` is not
+        // touched, so the diff-only arm never sees the function being duplicated.
+        'src/subscriptions/refund.ts': `export function calculateRefundShare(
+  total: number,
+  unusedDays: number,
+  cycleLength: number,
+): number {
+  if (cycleLength <= 0) {
+    return 0;
+  }
+
+  const bounded = Math.min(Math.max(unusedDays, 0), cycleLength);
+  const share = bounded / cycleLength;
+  const gross = total * share;
+  const settled = Math.round(gross * 100) / 100;
+
+  return Math.max(settled, 0);
+}
+
+// A second new function, deliberately innocuous and deliberately BELOW the duplicate. It
+// is what stops the line tolerance degenerating into "named the right file": in a file
+// holding one function, any tolerance credits a finding anywhere in it.
+export function refundReason(code: string): string {
+  return code === 'cancel' ? 'cancelled' : 'adjusted';
+}
+`,
+        'src/subscriptions/plan.ts': `import { calculateRefundShare } from './refund';
+
+export interface Plan {
+  name: string;
+  monthlyPrice: number;
+}
+
+export function describePlan(plan: Plan): string {
+  return plan.name + ' at ' + plan.monthlyPrice;
+}
+
+export function planRefund(plan: Plan, unusedDays: number): number {
+  return calculateRefundShare(plan.monthlyPrice, unusedDays, 30);
+}
+`,
+      },
+    }),
+};
+
 export const CORPUS: CorpusCase[] = [
   signatureDrift,
   newCycle,
   layeringBreach,
   localBug,
   cleanRefactor,
+  duplicateLogic,
 ];
 
 export function caseByName(name: string): CorpusCase | undefined {

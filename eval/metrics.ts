@@ -66,7 +66,15 @@ export function ratesFor(counts: CountSet): Rates {
  * This is the headline number. Overall recall mixes in local defects, which both arms can
  * see, and that dilutes exactly the difference the project claims to create.
  */
-export const CROSS_MODULE_KINDS: readonly DefectKind[] = ['cross-module', 'cycle', 'architecture'];
+export const CROSS_MODULE_KINDS: readonly DefectKind[] = [
+  'cross-module',
+  'cycle',
+  'architecture',
+  // Duplicated logic belongs here for the same reason the others do: the function being
+  // re-implemented lives in a file the diff never mentions, so the diff-only arm cannot
+  // know it exists. It is blindness of exactly the kind this number measures.
+  'duplicate',
+];
 
 export function crossModuleRecall(match: MatchResult, defects: KnownDefect[]): number | null {
   const relevant = defects.filter((defect) => CROSS_MODULE_KINDS.includes(defect.kind));
