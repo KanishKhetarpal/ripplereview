@@ -88,11 +88,21 @@ export class ChangeImpactService {
     // Duplicate detection reuses the project this method already loaded. It sits here
     // rather than in the review pipeline so that `impact` — the graph-only command, with
     // no model involved — reports it too: it is ground truth like everything else.
+    //
+    // headMetrics is passed through so the detector can rank a duplicate by how much the
+    // codebase depends on the module holding it, not by similarity alone — otherwise a
+    // handful of duplicated test fixtures can fill the report and crowd out the one
+    // duplicate that matters. See `rankMatches` in duplicate-detector.service.ts for the
+    // measurement behind that. Costs nothing extra here: headGraph and headMetrics are
+    // already computed above for the blast radius.
     const duplicates = await this.duplicates.detect({
       project: loaded.project,
       repoRoot,
       repoId: (await this.git.originUrl(repoRoot)) ?? repoRoot,
       changeSet,
+      moduleFanIn: new Map(
+        [...headMetrics.entries()].map(([moduleId, metrics]) => [moduleId, metrics.fanIn]),
+      ),
     });
 
     const impact: ChangeImpact = {

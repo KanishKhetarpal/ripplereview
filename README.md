@@ -243,6 +243,16 @@ the only thing that would have to change.
 citation for it. "This already exists at `foo.ts:42`" is the easiest claim in the system to
 hallucinate plausibly: a path and a line number always look like a fact.
 
+**At most ten matches are kept, ranked by module fan-in first, similarity second.** Not by
+similarity alone: the very first time this ran against RippleReview's own repository, all
+ten reported matches were duplicated test fixtures — real duplicates, but they crowded out
+production duplication a reviewer needs to hear about, because a copied spec file scores
+exactly as high as a copied service. Measured on this repository, module fan-in separates
+the two populations almost perfectly (0 for 40 of 40 test files, a median of 3 for source
+files), so ranking on it — the same fan-in the graph engine already computes for the blast
+radius — costs nothing extra and fixes the crowding without guessing at a path convention
+this tool has never looked at outside its own repo.
+
 ### Across repositories
 
 With `DATABASE_URL` set and pgvector available, every reviewed repository's fingerprints
@@ -307,10 +317,14 @@ Honest about direction: the blast radius **under-reports** rather than inventing
 - Duplicate detection ignores functions under 40 normalised tokens, roughly eight lines.
   Below that every accessor in a codebase is identical to every other one.
 - **It does not know which duplicates are deliberate.** Test fixtures, generated code and
-  intentionally parallel implementations all match, and on a repository with much
-  duplicated test setup the ten reported matches can be filled entirely by it. The prompt
-  asks the model to judge whether consolidating would be an improvement; the detector does
-  not, and there is no path-based exclusion.
+  intentionally parallel implementations all match. The ten reported matches are ranked by
+  module fan-in first and similarity only to break ties — deliberately not by path — so a
+  copied production helper now outranks a copied test fixture rather than being crowded out
+  by it, but a repository whose test setup happens to import real production modules could
+  still fill the cap with fixtures the graph has no way to tell from the thing they test.
+  The prompt asks the model to judge whether consolidating would be an improvement; the
+  detector's job stops at "these two are structurally alike, and here is how much weight the
+  rest of the graph puts behind them."
 - Duplicate detection has no equivalent of `unanalysedFiles`: a repository whose tsconfig
   excludes a file will not compare against the functions in it, and says nothing about it.
 

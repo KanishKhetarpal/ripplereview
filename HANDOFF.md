@@ -242,6 +242,24 @@ a failing build.
   in a throwaway clone, so path identity makes every CI run a new repository and hands a
   project its own functions back as cross-repository duplicates. Strip credentials from it —
   the checkout injects a token into the clone URL, which would otherwise become a primary key.
+- **The ten-slot cap was ranked by similarity alone and duplicated test fixtures filled it.**
+  The very first real run of this detector — against this repository — reported ten matches,
+  every one a copy-pasted test fixture; a copy-pasted production function would have scored
+  no higher and could not have displaced any of them. Measured: on this repository a test
+  file's module fan-in is 0 for 40 of 40 with no exception, against a median of 3 (max 28)
+  for source files — near-binary, not fuzzy. Fixed by ranking on fan-in first and similarity
+  only to break ties, using the fan-in the graph engine had already computed for the blast
+  radius (`headMetrics`, threaded into `DuplicateDetectorService.detect` as `moduleFanIn`).
+  **No path pattern anywhere** — a `*.spec.ts` glob was the obvious fix and was rejected: it
+  is a guess about naming conventions this tool has never looked at outside its own repo, and
+  it would still rank a genuinely unimported production file (an entry point, a deliberately
+  standalone config module) below a heavily-copied test helper. Pinned by a fixture built to
+  fail on the unfixed code: eleven zero-fan-in near-duplicate pairs plus one real copy-paste
+  at fan-in 1 on each side — similarity-only ranking loses the one that matters, every time,
+  because a pure rename scores higher than a realistic copy with one variable folded away.
+  Five mutations, all red, including one that reverted only the two-line wiring change in
+  `ChangeImpactService` — the ranking-only tests didn't catch that one; a separate test going
+  through the real service, not calling the detector directly, was needed to pin it.
 
 **Build**
 
@@ -308,10 +326,6 @@ Then, in rough order:
 
 - [ ] Post a review to a real pull request and confirm the inline/summary split behaves.
       Everything up to that call is tested; the call itself has never run.
-- [ ] Decide what to do about duplicated test fixtures. The detector reports them, they are
-      real, and on a repository with much duplicated test setup they can fill the ten
-      reported matches on their own. A path exclusion is the obvious answer and is also a
-      policy the tool should probably not hard-code.
 - [ ] Publish the Docker image; deploy.
 - [ ] Scale the corpus beyond six purpose-built repositories — mutations of a real OSS
       repository is the obvious next step.

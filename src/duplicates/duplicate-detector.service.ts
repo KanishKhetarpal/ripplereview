@@ -18,6 +18,17 @@ export interface DetectOptions {
    */
   repoId: string;
   changeSet: ChangeSet;
+  /**
+   * Module fan-in, keyed by the same repo-relative path `FunctionUnit.file` uses. The
+   * graph engine has already computed this; passing it in costs nothing extra to produce.
+   *
+   * Optional, and a caller that omits it gets today's similarity-only ranking rather than
+   * an error — the two are meant to be indistinguishable when nothing depends on anything
+   * (see `rankMatches`). Every real review supplies it via `ChangeImpactService`; the
+   * fixture-driven specs in this directory mostly do not, because a synthetic repo with no
+   * import structure has no fan-in to give.
+   */
+  moduleFanIn?: ReadonlyMap<string, number>;
 }
 
 /**
@@ -44,6 +55,51 @@ export const DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
  */
 const MAX_MATCHES_PER_UNIT = 3;
 const MAX_MATCHES_TOTAL = 10;
+
+/**
+ * The final ranking, once every candidate pair is known: importance first, then
+ * similarity. This is what MAX_MATCHES_TOTAL actually keeps.
+ *
+ * Found on this project's own history — the FIRST time the detector ran for real, all ten
+ * reported matches were duplicated test fixtures (three copies of the same
+ * `ChangeImpact` builder, spread across spec files). They were real duplicates, but a cap
+ * that similarity alone fills with them hides the one class of duplicate a reviewer most
+ * needs to hear about: production code, copy-pasted into a module other code depends on.
+ *
+ * Measured before ranking by it: on this repository, a test file's module fan-in is 0 for
+ * 40 of 40 test files with no exception, against a median of 3 (max 28) for source files —
+ * a near-total split, not a fuzzy one. Ranked by similarity alone, the top ten pairs found
+ * on this repository were one source-only pair and nine test-only; ranked by fan-in first,
+ * they were four source-only and six test-only, and every source pair with real fan-in
+ * (5, 5, 2) now outranks every zero-fan-in test pair, including several perfect 1.00
+ * matches. Lexicographic rather than a blended score, because the split IS near-binary and
+ * a blend would let enough similarity buy back a slot a leaf file should not have.
+ *
+ * No path pattern anywhere. The natural alternative — skip anything under `__tests__` or
+ * matching `*.spec.*` — was rejected on the same grounds `field-options.service.ts`
+ * rejects a hardcoded list elsewhere in this codebase's sibling projects: it is a guess
+ * about naming conventions this tool has never looked at outside its own repository, and
+ * it would still rank a genuinely important zero-fan-in file (an entry point, a config
+ * module intentionally imported by nothing) below a heavily-copied test helper. Fan-in is
+ * a measurement the graph already makes about every file; a path glob is not.
+ */
+function rankMatches(
+  matches: DuplicateMatch[],
+  fanInOf: (file: string) => number,
+): DuplicateMatch[] {
+  const importanceOf = (match: DuplicateMatch): number => {
+    const own = fanInOf(match.file);
+    // The other repository's structure is not ours to see, so a cross-repository match is
+    // ranked on the touched side alone rather than pretending to know the far side's.
+    if (match.scope === 'other-repository') return own;
+    return Math.max(own, fanInOf(match.duplicateOf.file));
+  };
+
+  return [...matches].sort((a, b) => {
+    const byImportance = importanceOf(b) - importanceOf(a);
+    return byImportance !== 0 ? byImportance : b.similarity - a.similarity;
+  });
+}
 
 /**
  * Finds changed functions whose logic already exists somewhere.
@@ -118,7 +174,8 @@ export class DuplicateDetectorService {
     // review is the product.
     await this.store.remember(options.repoId, units, vectors, this.embedder);
 
-    return matches.sort((a, b) => b.similarity - a.similarity).slice(0, MAX_MATCHES_TOTAL);
+    const fanInOf = (file: string): number => options.moduleFanIn?.get(file) ?? 0;
+    return rankMatches(matches, fanInOf).slice(0, MAX_MATCHES_TOTAL);
   }
 
   /**
@@ -192,3 +249,5 @@ function isTouched(unit: FunctionUnit, changeSet: ChangeSet): boolean {
 function round(similarity: number): number {
   return Math.round(similarity * 100) / 100;
 }
+
+export { rankMatches };
