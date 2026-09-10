@@ -1,6 +1,8 @@
+import { join } from 'node:path';
 import { CorpusCase } from '../types';
 import { WHOLE_CHANGE_TOLERANCE } from '../matcher';
 import { buildRepo } from './build-repo';
+import { readFixtureTree } from './read-fixture-tree';
 
 /**
  * The defect corpus.
@@ -457,6 +459,190 @@ export function planRefund(plan: Plan, unusedDays: number): number {
     }),
 };
 
+// ---------------------------------------------------------------------------------------
+// 7. Signature drift, grafted onto real code: a vendored slice of a real production
+//    codebase (arch-lens, see __fixtures__/arch-lens-slice/SOURCE.md), not another hand-typed
+//    toy. The six cases above are enough to detect a large effect; this one tests whether
+//    the graph engine and the model still hold up once the file count, naming and
+//    incidental complexity are someone else's rather than shaped to make a point.
+// ---------------------------------------------------------------------------------------
+
+const ARCH_LENS_SLICE = join(__dirname, '__fixtures__/arch-lens-slice/src');
+
+const CASE_TSCONFIG = JSON.stringify(
+  {
+    compilerOptions: {
+      target: 'ES2022',
+      module: 'commonjs',
+      strict: true,
+      skipLibCheck: true,
+      noEmit: true,
+      // The vendored classes carry real @Injectable() decorators (arch-lens is a NestJS
+      // app throughout); these are needed for them to type-check at all.
+      experimentalDecorators: true,
+      emitDecoratorMetadata: true,
+    },
+    include: ['src/**/*'],
+  },
+  null,
+  2,
+);
+
+const realRepoSignatureDrift: CorpusCase = {
+  name: 'real-repo-signature-drift',
+  summary:
+    'A vendored slice of a real codebase (arch-lens). resolveModuleSpecifier gains an ' +
+    'opt-in case-insensitive matching mode; dependency-graph-builder.ts (src/graph/) is ' +
+    'updated to use it. di-graph-builder.ts (src/dataflow/), which independently builds ' +
+    'the same lookup set and calls the same function, is not — so it silently keeps the ' +
+    'old, narrower matching. Compiles cleanly either way, and the untouched file is never ' +
+    'in the diff.',
+  defects: [
+    {
+      id: 'di-graph-misses-case-insensitive-edge',
+      kind: 'cross-module',
+      file: 'src/dataflow/builder/di-graph-builder.ts',
+      line: 88,
+      lineTolerance: 6,
+      acceptCategories: ['cross-module-regression', 'correctness'],
+      description:
+        "resolveImportedTypeOrigins still calls resolveModuleSpecifier with the old " +
+        '3-argument form, so an import whose specifier case has drifted from the target ' +
+        "file's declared case resolves in the dependency graph (which opted in) but not " +
+        'in the DI graph, which silently drops the edge instead.',
+    },
+  ],
+  build: () => {
+    const base: Record<string, string> = {
+      ...readFixtureTree(ARCH_LENS_SLICE),
+      'tsconfig.json': CASE_TSCONFIG,
+    };
+
+    const head: Record<string, string> = {
+      'src/graph/builder/module-specifier-resolver.ts': `import { posix } from 'node:path';
+
+const RESOLVABLE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx'];
+
+/**
+ * Expands a relative import specifier written from \`importerRelativePath\`
+ * into the ordered list of repo-relative paths it could resolve to
+ * (extension-less, explicit extensions, then directory index files) —
+ * mirroring Node/TS module resolution without touching the filesystem.
+ */
+export function candidateSpecifierPaths(importerRelativePath: string, specifier: string): string[] {
+  const importerDir = posix.dirname(importerRelativePath);
+  const joined = posix.normalize(posix.join(importerDir, specifier));
+
+  const candidates = [joined];
+  for (const ext of RESOLVABLE_EXTENSIONS) {
+    candidates.push(\`\${joined}\${ext}\`);
+  }
+  for (const ext of RESOLVABLE_EXTENSIONS) {
+    candidates.push(posix.join(joined, \`index\${ext}\`));
+  }
+  return candidates;
+}
+
+/**
+ * Resolves a relative import specifier to the \`relativePath\` of the
+ * ModuleSymbol it points at, or undefined if it falls outside the parsed
+ * set (e.g. it resolves to a file that wasn't ingested).
+ *
+ * \`caseInsensitiveFilesystem\` matches candidates against \`knownRelativePaths\`
+ * ignoring case, for checkouts where an import's case has drifted from the
+ * target file's declared case without anyone noticing — Windows and default
+ * macOS never complained. Off by default, so a caller that hasn't been
+ * updated keeps its old, case-sensitive behaviour.
+ */
+export function resolveModuleSpecifier(
+  importerRelativePath: string,
+  specifier: string,
+  knownRelativePaths: ReadonlySet<string>,
+  caseInsensitiveFilesystem = false,
+): string | undefined {
+  const candidates = candidateSpecifierPaths(importerRelativePath, specifier);
+
+  if (!caseInsensitiveFilesystem) {
+    return candidates.find((candidate) => knownRelativePaths.has(candidate));
+  }
+
+  const lowerToActual = new Map([...knownRelativePaths].map((path) => [path.toLowerCase(), path]));
+  const match = candidates.find((candidate) => lowerToActual.has(candidate.toLowerCase()));
+  return match ? lowerToActual.get(match.toLowerCase()) : undefined;
+}
+`,
+      'src/graph/builder/dependency-graph-builder.ts': `import { Injectable } from '@nestjs/common';
+import { posix } from 'node:path';
+import { ModuleSymbol } from '../../parser/interfaces/module-symbol.interface';
+import { DependencyGraph, GraphEdge, GraphNode } from '../interfaces/graph.interface';
+import { resolveModuleSpecifier } from './module-specifier-resolver';
+
+@Injectable()
+export class DependencyGraphBuilder {
+  /**
+   * Builds a DependencyGraph from normalized ModuleSymbols. One node per
+   * symbol; one edge per relative import that resolves to another symbol in
+   * the same set. Non-relative imports (npm packages, etc.) are recorded on
+   * the node as \`externalImports\` rather than as edges. Re-exports
+   * (\`export ... from\`) don't create edges here — only \`import\` relations do.
+   */
+  build(symbols: ModuleSymbol[]): DependencyGraph {
+    const knownRelativePaths = new Set(symbols.map((symbol) => symbol.relativePath));
+    const externalImportsByNode = new Map<string, Set<string>>();
+    const edgeKeys = new Set<string>();
+    const edges: GraphEdge[] = [];
+
+    for (const symbol of symbols) {
+      externalImportsByNode.set(symbol.relativePath, new Set());
+
+      for (const importDecl of symbol.imports) {
+        if (!importDecl.isRelative) {
+          externalImportsByNode.get(symbol.relativePath)?.add(importDecl.moduleSpecifier);
+          continue;
+        }
+
+        // Opted into case-insensitive matching: a real checkout can carry an import whose
+        // case has drifted from the target file's declared case, and this graph feeds the
+        // diagram and cycle detection — under-reporting an edge here is the wrong direction.
+        const resolved = resolveModuleSpecifier(
+          symbol.relativePath,
+          importDecl.moduleSpecifier,
+          knownRelativePaths,
+          true,
+        );
+        if (!resolved || resolved === symbol.relativePath) {
+          continue;
+        }
+
+        const edgeKey = \`\${symbol.relativePath}=>\${resolved}\`;
+        if (edgeKeys.has(edgeKey)) {
+          continue;
+        }
+        edgeKeys.add(edgeKey);
+        edges.push({
+          from: symbol.relativePath,
+          to: resolved,
+          specifier: importDecl.moduleSpecifier,
+        });
+      }
+    }
+
+    const nodes: GraphNode[] = symbols.map((symbol) => ({
+      id: symbol.relativePath,
+      label: posix.basename(symbol.relativePath),
+      externalImports: Array.from(externalImportsByNode.get(symbol.relativePath) ?? []).sort(),
+    }));
+
+    return { nodes, edges };
+  }
+}
+`,
+    };
+
+    return buildRepo({ base, head });
+  },
+};
+
 export const CORPUS: CorpusCase[] = [
   signatureDrift,
   newCycle,
@@ -464,6 +650,7 @@ export const CORPUS: CorpusCase[] = [
   localBug,
   cleanRefactor,
   duplicateLogic,
+  realRepoSignatureDrift,
 ];
 
 export function caseByName(name: string): CorpusCase | undefined {

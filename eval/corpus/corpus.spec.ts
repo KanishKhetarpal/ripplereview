@@ -193,6 +193,20 @@ describe('eval corpus', () => {
       expect(Math.abs(decoyLine - defect.line)).toBeGreaterThan(defect.lineTolerance);
     });
 
+    it('real-repo-signature-drift: the un-updated caller is in the blast radius', () => {
+      // The point of vendoring real code: di-graph-builder.ts is a real second caller of
+      // the changed function, in a different top-level folder, that the diff never touches.
+      const { impact } = built.get('real-repo-signature-drift')!;
+      expect(impact.impactedSites.map((s) => s.file)).toContain(
+        'src/dataflow/builder/di-graph-builder.ts',
+      );
+    });
+
+    it('real-repo-signature-drift: the diff really does not mention the un-updated caller', () => {
+      const { impact } = built.get('real-repo-signature-drift')!;
+      expect(impact.changedFiles).not.toContain('src/dataflow/builder/di-graph-builder.ts');
+    });
+
     it('clean-refactor: no cycle and no violation is introduced', () => {
       const { impact } = built.get('clean-refactor')!;
       expect(impact.cycles.filter((c) => c.introducedByChange)).toEqual([]);
