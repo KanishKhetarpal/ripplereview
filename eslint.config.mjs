@@ -6,7 +6,18 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'eval/out/**', '.probe/**'],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'coverage/**',
+      'eval/out/**',
+      '.probe/**',
+      // A vendored real-code snapshot (see SOURCE.md there), read as plain text by
+      // read-fixture-tree.ts and never imported by anything TypeScript compiles — outside
+      // tsconfig.json's program the same way, so there is no project for ESLint to type-check
+      // it against, and no reason to hold someone else's file to this repo's lint rules.
+      'eval/corpus/__fixtures__/**',
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
