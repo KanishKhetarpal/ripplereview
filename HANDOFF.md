@@ -60,7 +60,7 @@ Two rules that constrain everything:
 | 4 — Persistence, GitHub integration, queue, Action, Docker | ✅ done |
 | 5 — Duplicate-logic detection, pgvector corpus, dashboard | ✅ done |
 
-**524 passing locally, 50 skipped (they need Postgres). In CI, where a pgvector service
+**540 passing locally, 50 skipped (they need Postgres). In CI, where a pgvector service
 container runs, the skipped ones run instead — bar the handful that assert behaviour with
 persistence switched OFF, which skip there.**
 
@@ -277,7 +277,7 @@ a failing build.
 
 ## The eval harness
 
-Six corpus cases, each a real two-commit git repository built programmatically:
+Seven corpus cases, each a real two-commit git repository built programmatically:
 
 | Case | Defect | Purpose |
 |---|---|---|
@@ -285,8 +285,31 @@ Six corpus cases, each a real two-commit git repository built programmatically:
 | `new-cycle` | new import closes a cycle | headline claim |
 | `layering-breach` | domain imports infrastructure against a declared rule | headline claim |
 | `duplicate-logic` | new helper re-implements one the diff never mentions | headline claim |
+| `real-repo-signature-drift` | the same signature-drift shape, grafted onto a vendored slice of a real codebase | headline claim, on real code |
 | `local-bug` | off-by-one fully visible in the diff | **control** — graph should NOT help |
 | `clean-refactor` | nothing wrong at all | **control** — does context invent findings? |
+
+`real-repo-signature-drift` vendors eleven files, unmodified, from `arch-lens`
+(`eval/corpus/__fixtures__/arch-lens-slice/SOURCE.md` has the pinned commit and file list —
+this project's own sibling, not public third-party OSS, but real production code rather
+than another hand-typed snippet). `resolveModuleSpecifier` gains an opt-in
+`caseInsensitiveFilesystem` parameter; one real caller (`dependency-graph-builder.ts`) is
+updated to pass it, the other real caller (`di-graph-builder.ts`, in a different top-level
+folder) is not — mirroring `signature-drift`'s shape on code nobody wrote to make the point.
+
+**Vendoring real framework code into a from-scratch fixture needs ambient shims.** The
+harness never runs `pnpm install` for a corpus repo, so the vendored files' real
+`@nestjs/common` and `node:path` imports have nothing to resolve against. A small
+`declare module` `.d.ts` (`_harness-shims.d.ts`, documented as not-vendored-content in
+SOURCE.md) satisfies them at the type level only. **The first attempt put that shim under a
+plain `fixtures/` directory inside the root tsconfig's `include` — it leaked:** an ambient
+module declaration is global to whatever TypeScript program contains it, so the stub's
+one-export `@nestjs/common` silently shadowed the real one for the *whole project*, and
+`pnpm lint`/`typecheck` broke everywhere `@nestjs/common` is used for anything but
+`Injectable`. Renaming the directory to `__fixtures__` — the exact convention
+`src/graph/__fixtures__` and `src/duplicates/__fixtures__` already use, already excluded by
+`tsconfig.json` and `vitest.config.mts` — fixed it; `eslint.config.mjs` needed its own
+explicit ignore added, since ESLint's ignore list is separate from both.
 
 `eval/corpus/corpus.spec.ts` validates the corpus *before* it scores anything: every repo
 must **compile at head**, and the graph must actually **surface** each structural defect.
@@ -311,8 +334,10 @@ The blast radius **under-reports** rather than inventing reach:
   `unanalysedFiles`.
 - DI by string token and computed `import()` are invisible to a static graph.
 - Gemini token counts are estimated with OpenAI's tokenizer.
-- The corpus is six small purpose-built repos — enough to detect a large effect, not a
-  small one. Scaling to mutations of a real OSS repo is the obvious next step.
+- The corpus is seven small repos — enough to detect a large effect, not a small one. One
+  (`real-repo-signature-drift`) is now built from a vendored real codebase rather than a
+  hand-typed snippet; scaling further with genuine third-party OSS repositories remains
+  open.
 - Ranking weights in `evidence-builder.ts` are reasoned, not tuned against measured
   catch-rate. The Phase 3 number is what would justify them.
 
@@ -327,5 +352,6 @@ Then, in rough order:
 - [ ] Post a review to a real pull request and confirm the inline/summary split behaves.
       Everything up to that call is tested; the call itself has never run.
 - [ ] Publish the Docker image; deploy.
-- [ ] Scale the corpus beyond six purpose-built repositories — mutations of a real OSS
-      repository is the obvious next step.
+- [x] Scale the corpus beyond six purpose-built repositories — `real-repo-signature-drift`
+      grafts the same defect shape onto a vendored slice of a real codebase instead of a
+      hand-typed one. Genuine third-party OSS repositories remain a further step.

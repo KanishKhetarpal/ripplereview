@@ -296,9 +296,12 @@ Honest about direction: the blast radius **under-reports** rather than inventing
   verifies, enqueues and returns; a worker clones the pull request, reviews it and posts.
   The queue, the checkout and the rendering are all tested against real dependencies — the
   final `POST /pulls/:n/reviews` is not.
-- The corpus is **six small purpose-built repositories**. It is enough to detect a large
-  effect and not enough to measure a small one; scaling it to mutations of a real OSS
-  repository is the obvious next step.
+- The corpus is **seven small repositories**, six hand-typed and one — `real-repo-signature-drift` —
+  built from a vendored, unmodified slice of a real production codebase (`arch-lens`, this
+  project's own sibling, not a public third-party repository — see
+  `eval/corpus/__fixtures__/arch-lens-slice/SOURCE.md`) with the same signature-drift defect
+  grafted onto it. It is enough to detect a large effect and not enough to measure a small
+  one; scaling further with genuine third-party OSS repositories remains open.
 - A module-scope change (an edited import) has no declaration to look references up from, so
   its dependents are walked through the module graph and reported at module granularity,
   capped at 25 dependants.
