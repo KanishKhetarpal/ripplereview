@@ -60,7 +60,7 @@ Two rules that constrain everything:
 | 4 — Persistence, GitHub integration, queue, Action, Docker | ✅ done |
 | 5 — Duplicate-logic detection, pgvector corpus, dashboard | ✅ done |
 
-**540 passing locally, 50 skipped (they need Postgres). In CI, where a pgvector service
+**546 passing locally, 50 skipped (they need Postgres). In CI, where a pgvector service
 container runs, the skipped ones run instead — bar the handful that assert behaviour with
 persistence switched OFF, which skip there.**
 
@@ -277,7 +277,7 @@ a failing build.
 
 ## The eval harness
 
-Seven corpus cases, each a real two-commit git repository built programmatically:
+Eight corpus cases, each a real two-commit git repository built programmatically:
 
 | Case | Defect | Purpose |
 |---|---|---|
@@ -286,16 +286,28 @@ Seven corpus cases, each a real two-commit git repository built programmatically
 | `layering-breach` | domain imports infrastructure against a declared rule | headline claim |
 | `duplicate-logic` | new helper re-implements one the diff never mentions | headline claim |
 | `real-repo-signature-drift` | the same signature-drift shape, grafted onto a vendored slice of a real codebase | headline claim, on real code |
+| `real-repo-new-cycle` | the same slice, a different defect: an extracted helper closes a cycle | headline claim, on real code |
 | `local-bug` | off-by-one fully visible in the diff | **control** — graph should NOT help |
 | `clean-refactor` | nothing wrong at all | **control** — does context invent findings? |
 
-`real-repo-signature-drift` vendors eleven files, unmodified, from `arch-lens`
-(`eval/corpus/__fixtures__/arch-lens-slice/SOURCE.md` has the pinned commit and file list —
-this project's own sibling, not public third-party OSS, but real production code rather
-than another hand-typed snippet). `resolveModuleSpecifier` gains an opt-in
+`real-repo-signature-drift` and `real-repo-new-cycle` share one vendored slice — eleven
+files, unmodified, from `arch-lens` (`eval/corpus/__fixtures__/arch-lens-slice/SOURCE.md`
+has the pinned commit and file list — this project's own sibling, not public third-party
+OSS, but real production code rather than another hand-typed snippet). Each case's `head`
+independently overrides only the files its own defect touches, so the two never interfere.
+
+`real-repo-signature-drift`: `resolveModuleSpecifier` gains an opt-in
 `caseInsensitiveFilesystem` parameter; one real caller (`dependency-graph-builder.ts`) is
 updated to pass it, the other real caller (`di-graph-builder.ts`, in a different top-level
 folder) is not — mirroring `signature-drift`'s shape on code nobody wrote to make the point.
+
+`real-repo-new-cycle`: the "which paths are known" set-building logic — duplicated
+verbatim in both real builder files — is pulled out of `dependency-graph-builder.ts` into
+an exported helper instead of into the leaf `module-specifier-resolver.ts` already sits in;
+that leaf then imports the helper back so a caller holding symbols can reuse it. The
+builder already imports `resolveModuleSpecifier` from the leaf, so the new import closes a
+two-file cycle — the same "someone extracts a helper into the wrong file" mistake real
+codebases actually make, not one invented to fit the corpus.
 
 **Vendoring real framework code into a from-scratch fixture needs ambient shims.** The
 harness never runs `pnpm install` for a corpus repo, so the vendored files' real
@@ -334,10 +346,10 @@ The blast radius **under-reports** rather than inventing reach:
   `unanalysedFiles`.
 - DI by string token and computed `import()` are invisible to a static graph.
 - Gemini token counts are estimated with OpenAI's tokenizer.
-- The corpus is seven small repos — enough to detect a large effect, not a small one. One
-  (`real-repo-signature-drift`) is now built from a vendored real codebase rather than a
-  hand-typed snippet; scaling further with genuine third-party OSS repositories remains
-  open.
+- The corpus is eight small repos — enough to detect a large effect, not a small one. Two
+  (`real-repo-signature-drift`, `real-repo-new-cycle`) are now built from a vendored real
+  codebase rather than a hand-typed snippet; scaling further with genuine third-party OSS
+  repositories remains open.
 - Ranking weights in `evidence-builder.ts` are reasoned, not tuned against measured
   catch-rate. The Phase 3 number is what would justify them.
 
