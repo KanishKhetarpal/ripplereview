@@ -643,6 +643,176 @@ export class DependencyGraphBuilder {
   },
 };
 
+// ---------------------------------------------------------------------------------------
+// 8. A cycle, grafted onto the same vendored slice: someone pulls the "which paths are
+//    known" set-building logic out of dependency-graph-builder.ts (the first caller that
+//    needed it) into an exported helper, instead of into the leaf utility module-specifier-
+//    resolver.ts already sits in. module-specifier-resolver.ts then imports it back so a
+//    caller with the parsed symbol list can skip re-deriving the same set — closing a
+//    two-file cycle with the file that already imports resolveModuleSpecifier from it.
+// ---------------------------------------------------------------------------------------
+
+const realRepoNewCycle: CorpusCase = {
+  name: 'real-repo-new-cycle',
+  summary:
+    'The same vendored arch-lens slice as real-repo-signature-drift. The "which paths are ' +
+    'known" set-building logic is pulled out of dependency-graph-builder.ts into an ' +
+    'exported helper; module-specifier-resolver.ts imports it back so a caller holding ' +
+    'symbols rather than a pre-built set can reuse it. dependency-graph-builder.ts already ' +
+    'imports resolveModuleSpecifier from module-specifier-resolver.ts, so the new import ' +
+    'closes a cycle the diff never shows in either direction.',
+  defects: [
+    {
+      id: 'resolver-builder-cycle',
+      kind: 'cycle',
+      file: 'src/graph/builder/module-specifier-resolver.ts',
+      line: 1,
+      lineTolerance: WHOLE_CHANGE_TOLERANCE,
+      acceptCategories: ['circular-dependency', 'architecture'],
+      description:
+        'module-specifier-resolver.ts -> dependency-graph-builder.ts -> ' +
+        'module-specifier-resolver.ts. The new import closes the cycle; the diff shows only ' +
+        'a helper being reused, not the direction it was already depended on from.',
+    },
+  ],
+  build: () => {
+    const base: Record<string, string> = {
+      ...readFixtureTree(ARCH_LENS_SLICE),
+      'tsconfig.json': CASE_TSCONFIG,
+    };
+
+    const head: Record<string, string> = {
+      'src/graph/builder/dependency-graph-builder.ts': `import { Injectable } from '@nestjs/common';
+import { posix } from 'node:path';
+import { ModuleSymbol } from '../../parser/interfaces/module-symbol.interface';
+import { DependencyGraph, GraphEdge, GraphNode } from '../interfaces/graph.interface';
+import { resolveModuleSpecifier } from './module-specifier-resolver';
+
+/**
+ * Pulled out so a caller holding the parsed symbol list, rather than a pre-built lookup
+ * set, can reuse the exact same construction — see resolveModuleSpecifierFromSymbols.
+ */
+export function buildKnownRelativePaths(symbols: ModuleSymbol[]): Set<string> {
+  return new Set(symbols.map((symbol) => symbol.relativePath));
+}
+
+@Injectable()
+export class DependencyGraphBuilder {
+  /**
+   * Builds a DependencyGraph from normalized ModuleSymbols. One node per
+   * symbol; one edge per relative import that resolves to another symbol in
+   * the same set. Non-relative imports (npm packages, etc.) are recorded on
+   * the node as \`externalImports\` rather than as edges. Re-exports
+   * (\`export ... from\`) don't create edges here — only \`import\` relations do.
+   */
+  build(symbols: ModuleSymbol[]): DependencyGraph {
+    const knownRelativePaths = buildKnownRelativePaths(symbols);
+    const externalImportsByNode = new Map<string, Set<string>>();
+    const edgeKeys = new Set<string>();
+    const edges: GraphEdge[] = [];
+
+    for (const symbol of symbols) {
+      externalImportsByNode.set(symbol.relativePath, new Set());
+
+      for (const importDecl of symbol.imports) {
+        if (!importDecl.isRelative) {
+          externalImportsByNode.get(symbol.relativePath)?.add(importDecl.moduleSpecifier);
+          continue;
+        }
+
+        const resolved = resolveModuleSpecifier(
+          symbol.relativePath,
+          importDecl.moduleSpecifier,
+          knownRelativePaths,
+        );
+        if (!resolved || resolved === symbol.relativePath) {
+          continue;
+        }
+
+        const edgeKey = \`\${symbol.relativePath}=>\${resolved}\`;
+        if (edgeKeys.has(edgeKey)) {
+          continue;
+        }
+        edgeKeys.add(edgeKey);
+        edges.push({
+          from: symbol.relativePath,
+          to: resolved,
+          specifier: importDecl.moduleSpecifier,
+        });
+      }
+    }
+
+    const nodes: GraphNode[] = symbols.map((symbol) => ({
+      id: symbol.relativePath,
+      label: posix.basename(symbol.relativePath),
+      externalImports: Array.from(externalImportsByNode.get(symbol.relativePath) ?? []).sort(),
+    }));
+
+    return { nodes, edges };
+  }
+}
+`,
+      'src/graph/builder/module-specifier-resolver.ts': `import { posix } from 'node:path';
+import { ModuleSymbol } from '../../parser/interfaces/module-symbol.interface';
+import { buildKnownRelativePaths } from './dependency-graph-builder';
+
+const RESOLVABLE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx'];
+
+/**
+ * Expands a relative import specifier written from \`importerRelativePath\`
+ * into the ordered list of repo-relative paths it could resolve to
+ * (extension-less, explicit extensions, then directory index files) —
+ * mirroring Node/TS module resolution without touching the filesystem.
+ */
+export function candidateSpecifierPaths(importerRelativePath: string, specifier: string): string[] {
+  const importerDir = posix.dirname(importerRelativePath);
+  const joined = posix.normalize(posix.join(importerDir, specifier));
+
+  const candidates = [joined];
+  for (const ext of RESOLVABLE_EXTENSIONS) {
+    candidates.push(\`\${joined}\${ext}\`);
+  }
+  for (const ext of RESOLVABLE_EXTENSIONS) {
+    candidates.push(posix.join(joined, \`index\${ext}\`));
+  }
+  return candidates;
+}
+
+/**
+ * Resolves a relative import specifier to the \`relativePath\` of the
+ * ModuleSymbol it points at, or undefined if it falls outside the parsed
+ * set (e.g. it resolves to a file that wasn't ingested).
+ */
+export function resolveModuleSpecifier(
+  importerRelativePath: string,
+  specifier: string,
+  knownRelativePaths: ReadonlySet<string>,
+): string | undefined {
+  return candidateSpecifierPaths(importerRelativePath, specifier).find((candidate) =>
+    knownRelativePaths.has(candidate),
+  );
+}
+
+/**
+ * Convenience for a caller holding the parsed symbol list rather than a pre-built lookup
+ * set — dependency-graph-builder.ts already builds one this way, so this reuses that
+ * instead of every caller inlining the same \`new Set(...)\` line.
+ */
+export function resolveModuleSpecifierFromSymbols(
+  importerRelativePath: string,
+  specifier: string,
+  symbols: ModuleSymbol[],
+): string | undefined {
+  return resolveModuleSpecifier(importerRelativePath, specifier, buildKnownRelativePaths(symbols));
+}
+
+`,
+    };
+
+    return buildRepo({ base, head });
+  },
+};
+
 export const CORPUS: CorpusCase[] = [
   signatureDrift,
   newCycle,
@@ -651,6 +821,7 @@ export const CORPUS: CorpusCase[] = [
   cleanRefactor,
   duplicateLogic,
   realRepoSignatureDrift,
+  realRepoNewCycle,
 ];
 
 export function caseByName(name: string): CorpusCase | undefined {

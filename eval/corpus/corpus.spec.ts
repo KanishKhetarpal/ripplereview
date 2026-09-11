@@ -207,6 +207,24 @@ describe('eval corpus', () => {
       expect(impact.changedFiles).not.toContain('src/dataflow/builder/di-graph-builder.ts');
     });
 
+    it('real-repo-new-cycle: the cycle is detected AND attributed to this change', () => {
+      const { impact } = built.get('real-repo-new-cycle')!;
+      const introduced = impact.cycles.filter((cycle) => cycle.introducedByChange);
+
+      expect(introduced).toHaveLength(1);
+      expect(introduced[0].nodeIds.sort()).toEqual([
+        'src/graph/builder/dependency-graph-builder.ts',
+        'src/graph/builder/module-specifier-resolver.ts',
+      ]);
+    });
+
+    it('real-repo-new-cycle: no layering violation is offered as well', () => {
+      // Otherwise a win on this case could be credited to something other than the cycle
+      // evidence it exists to test.
+      const { impact } = built.get('real-repo-new-cycle')!;
+      expect(impact.layerViolations).toEqual([]);
+    });
+
     it('clean-refactor: no cycle and no violation is introduced', () => {
       const { impact } = built.get('clean-refactor')!;
       expect(impact.cycles.filter((c) => c.introducedByChange)).toEqual([]);
